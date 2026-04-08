@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 import { ChatbotModule } from './modules/chatbot/chatbot.module';
 
 @Module({
@@ -19,12 +21,16 @@ import { ChatbotModule } from './modules/chatbot/chatbot.module';
       database: process.env.DB_DATABASE,
       autoLoadEntities: true, // Automatically finds your "History" table
       synchronize: true,
-      ssl: {
-        rejectUnauthorized: false, // This allows RDS's self-signed cert
-      }, // SYNC: Creates tables automatically (Development only)
+      // Enable SSL only when explicitly requested (e.g., managed DBs like RDS)
+      ssl:
+        process.env.DB_SSL === 'true'
+          ? { rejectUnauthorized: false }
+          : undefined, // SYNC: Creates tables automatically (Development only)
     }),
 
     ChatbotModule,
   ],
+  controllers: [AppController],
+  providers: [AppService],
 })
 export class AppModule {}
