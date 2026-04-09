@@ -40,4 +40,4 @@ jobs:
     - name: Trigger ECS Deployment
       run: |
         # This tells ECS: "Hey, I pushed a new image, please restart the service and pull it!"
-        aws ecs update-service --cluster your-cluster-name --service your-service-name --force-new-deployment
+        aws ecs update-service --cluster nestjs-prod-cluster --service nestjs-service-fargate --force-new-deployment
