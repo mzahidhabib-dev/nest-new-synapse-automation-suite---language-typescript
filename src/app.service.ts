@@ -120,8 +120,8 @@ export class AppService {
         <div class="panel">
           <div class="label">Sample JSON</div>
           <code>{
-  "name": "Ada Lovelace",
-  "intent": "Test deployment"
+  "name": "Mr_User",
+  "intent": "Deployment Testing"
 }</code>
         </div>
       </div>
