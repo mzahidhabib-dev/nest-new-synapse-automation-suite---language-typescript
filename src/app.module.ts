@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ChatbotModule } from './modules/chatbot/chatbot.module';
@@ -9,6 +11,14 @@ import { ChatbotModule } from './modules/chatbot/chatbot.module';
   imports: [
     // 1. Load the .env file
     ConfigModule.forRoot({ isGlobal: true }),
+
+    // 1.1 Global rate limit baseline (can be overridden per route)
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000,
+        limit: 60,
+      },
+    ]),
 
     // 2. Connect to PostgreSQL
     TypeOrmModule.forRoot({
@@ -29,6 +39,12 @@ import { ChatbotModule } from './modules/chatbot/chatbot.module';
     ChatbotModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}

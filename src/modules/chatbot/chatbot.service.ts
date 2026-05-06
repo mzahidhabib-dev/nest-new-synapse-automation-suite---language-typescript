@@ -8,6 +8,9 @@ import OpenAI from 'openai';
 @Injectable()
 export class ChatbotService {
   private openai: OpenAI;
+  private readonly primaryModel = process.env.AI_PRIMARY_MODEL || 'openrouter/free';
+  private readonly fallbackModel =
+    process.env.AI_FALLBACK_MODEL || 'meta-llama/llama-3.3-8b-instruct:free';
 
   constructor(
     @InjectRepository(ChatHistory)
@@ -62,37 +65,50 @@ export class ChatbotService {
       - Mention that the Lead Developer of Synapse Suite is available for high-end freelance hire for MERN, NestJS, or Laravel projects.
     `;
 
-    try {
-      // 5. Call OpenRouter/OpenAI
-      const response = await this.openai.chat.completions.create({
-        model: 'openai/gpt-3.5-turbo', // Ensure this matches your OpenRouter preference
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...formattedHistory,
-        ],
-      });
+    const messages = [{ role: 'system', content: systemPrompt }, ...formattedHistory];
+    const modelsToTry = [this.primaryModel, this.fallbackModel];
+    const modelErrors: string[] = [];
 
-      let reply = response.choices[0].message.content;
+    let reply: string | null = null;
+    let usedModel: string | null = null;
 
-      if (reply) {
-        reply = reply.replace(/^["']|["']$/g, '').trim(); // Removes outer quotes if they exist
+    for (const model of modelsToTry) {
+      try {
+        const response = await this.openai.chat.completions.create({
+          model,
+          messages,
+        });
+
+        let modelReply = response.choices[0]?.message?.content;
+        if (modelReply) {
+          modelReply = modelReply.replace(/^["']|["']$/g, '').trim();
+        }
+
+        if (!modelReply) {
+          modelErrors.push(`${model}: empty response`);
+          continue;
+        }
+
+        reply = modelReply;
+        usedModel = model;
+        break;
+      } catch (error) {
+        modelErrors.push(`${model}: request failed`);
       }
+    }
 
-      if (!reply) {
-        throw new InternalServerErrorException('AI returned an empty response');
-      }
-
-      // 6. Save AI Reply to DB
-      await this.chatRepo.save({
-        email,
-        role: 'assistant',
-        content: reply,
-      });
-
-      return { success: true, reply };
-    } catch (error) {
-      console.error('AI Error:', error);
+    if (!reply || !usedModel) {
+      console.error('AI Error:', modelErrors.join(' | '));
       throw new InternalServerErrorException('AI failed to respond');
     }
+
+    // 6. Save AI Reply to DB
+    await this.chatRepo.save({
+      email,
+      role: 'assistant',
+      content: reply,
+    });
+
+    return { success: true, reply, model: usedModel };
   }
 }
