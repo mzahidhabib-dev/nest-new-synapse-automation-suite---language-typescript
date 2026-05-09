@@ -31,9 +31,9 @@ import { ChatbotModule } from './modules/chatbot/chatbot.module';
       database: process.env.DB_DATABASE,
       autoLoadEntities: true, // Automatically finds your "History" table
       synchronize: true,
-      ssl: {
-        rejectUnauthorized: false, // This allows RDS's self-signed cert
-      }, // SYNC: Creates tables automatically (Development only)
+      // ssl: {
+      //   rejectUnauthorized: false, // This allows RDS's self-signed cert
+      // }, // SYNC: Creates tables automatically (Development only)
     }),
 
     ChatbotModule,
