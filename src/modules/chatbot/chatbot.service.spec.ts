@@ -3,11 +3,6 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { InternalServerErrorException } from '@nestjs/common';
 import { ChatbotService } from './chatbot.service';
 import { ChatHistory } from './entities/chat-history.entity';
-import { streamText } from 'ai';
-
-jest.mock('ai', () => ({
-  streamText: jest.fn(),
-}));
 
 describe('ChatbotService', () => {
   let service: ChatbotService;
@@ -19,6 +14,8 @@ describe('ChatbotService', () => {
   beforeEach(() => {
     // Constructor requires an API key; use a fake value for unit tests
     process.env.OPENAI_API_KEY = 'test-key';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    process.env.GEMINI_MODEL = 'gemini-1.5-flash';
     process.env.AI_INPUT_COST_PER_1K = '0';
     process.env.AI_OUTPUT_COST_PER_1K = '0';
   });
@@ -58,8 +55,11 @@ describe('ChatbotService', () => {
         },
       },
     };
-    (service as any).openaiSdk = {
-      chat: jest.fn((model: string) => model),
+    (service as any).gemini = {
+      models: {
+        generateContent: jest.fn(),
+        generateContentStream: jest.fn(),
+      },
     };
   });
 
@@ -109,20 +109,41 @@ describe('ChatbotService', () => {
     });
   });
 
-  it('should throw when Groq request fails', async () => {
+  it('should use Gemini fallback when Groq request fails', async () => {
     const dto = { email: 'user@example.com', message: 'Hi bot' };
     chatRepo.find.mockResolvedValue([]);
 
     (service as any).groq.chat.completions.create.mockRejectedValue(
       new Error('Groq failed'),
     );
+    (service as any).gemini.models.generateContent.mockResolvedValue({
+      text: 'Gemini fallback reply',
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: 20,
+        totalTokenCount: 30,
+      },
+    });
 
-    await expect(service.generateResponse(dto)).rejects.toBeInstanceOf(
-      InternalServerErrorException,
-    );
+    const result = await service.generateResponse(dto);
+
     expect((service as any).groq.chat.completions.create).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'llama-3.3-70b-versatile' }),
     );
+    expect((service as any).gemini.models.generateContent).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gemini-1.5-flash' }),
+    );
+    expect(result).toEqual({
+      success: true,
+      reply: 'Gemini fallback reply',
+      model: 'gemini-1.5-flash',
+      usage: {
+        promptTokens: 10,
+        completionTokens: 20,
+        totalTokens: 30,
+      },
+      estimatedCostUsd: 0,
+    });
   });
 
   it('should throw when AI returns empty content', async () => {
@@ -144,6 +165,9 @@ describe('ChatbotService', () => {
 
     (service as any).groq.chat.completions.create.mockRejectedValue(
       new Error('Provider down'),
+    );
+    (service as any).gemini.models.generateContent.mockRejectedValue(
+      new Error('Fallback down'),
     );
 
     await expect(service.generateResponse(dto)).rejects.toBeInstanceOf(
@@ -187,6 +211,40 @@ describe('ChatbotService', () => {
       success: true,
       reply: 'Hello world',
       model: 'llama-3.3-70b-versatile',
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      estimatedCostUsd: 0,
+    });
+  });
+
+  it('should stream from Gemini fallback when Groq stream fails', async () => {
+    const dto = { email: 'user@example.com', message: 'Stream fallback test' };
+    chatRepo.find.mockResolvedValue([]);
+
+    const asyncGeminiStream = {
+      async *[Symbol.asyncIterator]() {
+        yield { text: 'Gemini' };
+        yield { text: ' stream' };
+      },
+    };
+
+    (service as any).groq.chat.completions.create.mockRejectedValue(
+      new Error('Groq stream failed'),
+    );
+    (service as any).gemini.models.generateContentStream.mockResolvedValue(
+      asyncGeminiStream,
+    );
+
+    const tokens: string[] = [];
+    const result = await service.generateStreamingResponse(dto, (t) => tokens.push(t));
+
+    expect(tokens).toEqual(['Gemini', ' stream']);
+    expect((service as any).gemini.models.generateContentStream).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gemini-1.5-flash' }),
+    );
+    expect(result).toEqual({
+      success: true,
+      reply: 'Gemini stream',
+      model: 'gemini-1.5-flash',
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       estimatedCostUsd: 0,
     });

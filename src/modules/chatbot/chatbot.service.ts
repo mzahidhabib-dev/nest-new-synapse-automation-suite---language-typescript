@@ -5,16 +5,16 @@ import { ChatHistory } from './entities/chat-history.entity';
 import { ChatRequestDto } from './dto/chat-request.dto';
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { streamText } from 'ai';
-import { createOpenAI } from '@ai-sdk/openai';
+import { GoogleGenAI } from '@google/genai';
 
 @Injectable()
 export class ChatbotService {
   private readonly logger = new Logger(ChatbotService.name);
   private openai: OpenAI;
   private groq: OpenAI;
-  private openaiSdk: ReturnType<typeof createOpenAI>;
+  private gemini: GoogleGenAI;
   private readonly groqModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+  private readonly geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
   private readonly primaryModel = process.env.AI_PRIMARY_MODEL || 'openrouter/free';
   private readonly fallbackModel =
     process.env.AI_FALLBACK_MODEL || 'meta-llama/llama-3.3-8b-instruct:free';
@@ -32,6 +32,7 @@ export class ChatbotService {
   ) {
     const apiKey = process.env.OPENAI_API_KEY;
     const groqApiKey = process.env.GROQ_API_KEY;
+    const geminiApiKey = process.env.GEMINI_API_KEY;
 
     this.openai = new OpenAI({
       apiKey: apiKey,
@@ -47,15 +48,14 @@ export class ChatbotService {
       baseURL: 'https://api.groq.com/openai/v1',
     });
 
-    this.openaiSdk = createOpenAI({
-      apiKey,
-      baseURL: 'https://openrouter.ai/api/v1',
-    });
+    this.gemini = new GoogleGenAI({ apiKey: geminiApiKey });
 
     this.logger.log(
       `AI clients configured openRouter=${Boolean(apiKey)} groq=${Boolean(
         groqApiKey,
-      )} groqModel=${this.groqModel}`,
+      )} groqModel=${this.groqModel} gemini=${Boolean(
+        geminiApiKey,
+      )} geminiModel=${this.geminiModel}`,
     );
   }
 
@@ -156,7 +156,10 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
       { role: 'system', content: systemPrompt },
       ...formattedHistory,
     ];
-    const modelsToTry = [this.groqModel];
+    const providersToTry = [
+      { provider: 'groq', model: this.groqModel },
+      { provider: 'gemini', model: this.geminiModel },
+    ] as const;
     const modelErrors: string[] = [];
 
     let reply: string | null = null;
@@ -164,46 +167,69 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
     let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null =
       null;
 
-    for (const model of modelsToTry) {
+    for (const { provider, model } of providersToTry) {
       const modelStartedAt = Date.now();
-      this.logger.log(`[${requestId}] /ask model attempt started model=${model}`);
+      this.logger.log(
+        `[${requestId}] /ask model attempt started provider=${provider} model=${model}`,
+      );
       try {
-        const response = await this.groq.chat.completions.create({
-          model,
-          messages,
-          temperature: this.temperature,
-          max_tokens: this.maxOutputTokens,
-        });
+        let modelReply = '';
 
-        let modelReply = response.choices[0]?.message?.content;
-        if (modelReply) {
-          modelReply = modelReply.replace(/^["']|["']$/g, '').trim();
+        if (provider === 'groq') {
+          const response = await this.groq.chat.completions.create({
+            model,
+            messages,
+            temperature: this.temperature,
+            max_tokens: this.maxOutputTokens,
+          });
+
+          modelReply = response.choices[0]?.message?.content || '';
+          usage = {
+            promptTokens: response.usage?.prompt_tokens ?? 0,
+            completionTokens: response.usage?.completion_tokens ?? 0,
+            totalTokens: response.usage?.total_tokens ?? 0,
+          };
+        } else {
+          const response = await this.gemini.models.generateContent({
+            model,
+            contents: this.buildGeminiPrompt(systemPrompt, formattedHistory),
+            config: {
+              temperature: this.temperature,
+              maxOutputTokens: this.maxOutputTokens,
+            },
+          });
+
+          modelReply = response.text || '';
+          usage = {
+            promptTokens: response.usageMetadata?.promptTokenCount ?? 0,
+            completionTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+            totalTokens: response.usageMetadata?.totalTokenCount ?? 0,
+          };
         }
 
+        modelReply = modelReply.replace(/^["']|["']$/g, '').trim();
+
         if (!modelReply) {
-          modelErrors.push(`${model}: empty response`);
+          modelErrors.push(`${provider}/${model}: empty response`);
           continue;
         }
 
         reply = modelReply;
         usedModel = model;
-        usage = {
-          promptTokens: response.usage?.prompt_tokens ?? 0,
-          completionTokens: response.usage?.completion_tokens ?? 0,
-          totalTokens: response.usage?.total_tokens ?? 0,
-        };
         this.logStep(requestId, '/ask model attempt succeeded', startedAt, modelStartedAt, {
+          provider,
           model,
           replyLength: reply.length,
-          totalTokens: usage.totalTokens,
+          totalTokens: usage?.totalTokens ?? 0,
         });
         break;
       } catch (error) {
         this.logStep(requestId, '/ask model attempt failed', startedAt, modelStartedAt, {
+          provider,
           model,
           error: error instanceof Error ? error.message : 'unknown error',
         });
-        modelErrors.push(`${model}: request failed`);
+        modelErrors.push(`${provider}/${model}: request failed`);
       }
     }
 
@@ -343,7 +369,10 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
 `;
 
     const messages: ChatCompletionMessageParam[] = formattedHistory;
-    const modelsToTry = [this.groqModel];
+    const providersToTry = [
+      { provider: 'groq', model: this.groqModel },
+      { provider: 'gemini', model: this.geminiModel },
+    ] as const;
     const modelErrors: string[] = [];
 
     let fullReply = '';
@@ -351,42 +380,72 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
     let tokenCount = 0;
     let firstTokenMs: number | null = null;
 
-    for (const model of modelsToTry) {
+    for (const { provider, model } of providersToTry) {
       const modelStartedAt = Date.now();
-      this.logger.log(`[${requestId}] /stream model attempt started model=${model}`);
+      this.logger.log(
+        `[${requestId}] /stream model attempt started provider=${provider} model=${model}`,
+      );
       try {
-        const stream = await this.groq.chat.completions.create({
-          model,
-          messages: [{ role: 'system', content: systemPrompt }, ...messages],
-          temperature: this.temperature,
-          max_tokens: this.maxOutputTokens,
-          stream: true,
-        });
-
         fullReply = '';
-        for await (const chunk of stream) {
-          const token = chunk.choices[0]?.delta?.content || '';
-          if (token) {
-            tokenCount += 1;
-            if (firstTokenMs === null) {
-              firstTokenMs = Date.now() - startedAt;
-              this.logger.log(
-                `[${requestId}] /stream first token received totalMs=${firstTokenMs} model=${model}`,
-              );
+
+        if (provider === 'groq') {
+          const stream = await this.groq.chat.completions.create({
+            model,
+            messages: [{ role: 'system', content: systemPrompt }, ...messages],
+            temperature: this.temperature,
+            max_tokens: this.maxOutputTokens,
+            stream: true,
+          });
+
+          for await (const chunk of stream) {
+            const token = chunk.choices[0]?.delta?.content || '';
+            if (token) {
+              tokenCount += 1;
+              if (firstTokenMs === null) {
+                firstTokenMs = Date.now() - startedAt;
+                this.logger.log(
+                  `[${requestId}] /stream first token received totalMs=${firstTokenMs} provider=${provider} model=${model}`,
+                );
+              }
+              fullReply += token;
+              onToken(token);
             }
-            fullReply += token;
-            onToken(token);
+          }
+        } else {
+          const stream = await this.gemini.models.generateContentStream({
+            model,
+            contents: this.buildGeminiPrompt(systemPrompt, messages),
+            config: {
+              temperature: this.temperature,
+              maxOutputTokens: this.maxOutputTokens,
+            },
+          });
+
+          for await (const chunk of stream) {
+            const token = chunk.text || '';
+            if (token) {
+              tokenCount += 1;
+              if (firstTokenMs === null) {
+                firstTokenMs = Date.now() - startedAt;
+                this.logger.log(
+                  `[${requestId}] /stream first token received totalMs=${firstTokenMs} provider=${provider} model=${model}`,
+                );
+              }
+              fullReply += token;
+              onToken(token);
+            }
           }
         }
 
         fullReply = fullReply.replace(/^["']|["']$/g, '').trim();
         if (!fullReply) {
-          modelErrors.push(`${model}: empty response`);
+          modelErrors.push(`${provider}/${model}: empty response`);
           continue;
         }
 
         usedModel = model;
         this.logStep(requestId, '/stream model attempt succeeded', startedAt, modelStartedAt, {
+          provider,
           model,
           tokenCount,
           replyLength: fullReply.length,
@@ -395,11 +454,12 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
         break;
       } catch (error) {
         this.logStep(requestId, '/stream model attempt failed', startedAt, modelStartedAt, {
+          provider,
           model,
           tokenCount,
           error: error instanceof Error ? error.message : 'unknown error',
         });
-        modelErrors.push(`${model}: request failed`);
+        modelErrors.push(`${provider}/${model}: request failed`);
       }
     }
 
@@ -473,6 +533,20 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
       return fallback;
     }
     return parsed;
+  }
+
+  private buildGeminiPrompt(
+    systemPrompt: string,
+    history: ChatCompletionMessageParam[],
+  ): string {
+    const conversation = history
+      .map((message) => {
+        const content = typeof message.content === 'string' ? message.content : '';
+        return `${message.role}: ${content}`;
+      })
+      .join('\n');
+
+    return `${systemPrompt.trim()}\n\nConversation so far:\n${conversation}`;
   }
 
   private logStep(
