@@ -13,8 +13,10 @@ export class ChatbotService {
   private openai: OpenAI;
   private groq: OpenAI;
   private gemini: GoogleGenAI;
-  private readonly groqModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-  private readonly geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+  
+  private readonly groqModel: string = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+  private readonly geminiModel: string = process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest';
+
   private readonly primaryModel = process.env.AI_PRIMARY_MODEL || 'openrouter/free';
   private readonly fallbackModel =
     process.env.AI_FALLBACK_MODEL || 'meta-llama/llama-3.3-8b-instruct:free';
@@ -192,7 +194,8 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
         } else {
           const response = await this.gemini.models.generateContent({
             model,
-            contents: this.buildGeminiPrompt(systemPrompt, formattedHistory),
+            // contents: this.buildGeminiPrompt(systemPrompt, formattedHistory),
+            contents: this.buildGeminiPrompt(systemPrompt, messages),
             config: {
               temperature: this.temperature,
               maxOutputTokens: this.maxOutputTokens,
