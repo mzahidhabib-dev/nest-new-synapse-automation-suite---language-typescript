@@ -6,6 +6,8 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ChatbotModule } from './modules/chatbot/chatbot.module';
+import { EmailAutomatorModule } from './modules/email-automator/email-automator.module';
+
 
 @Module({
   imports: [
@@ -37,6 +39,7 @@ import { ChatbotModule } from './modules/chatbot/chatbot.module';
     }),
 
     ChatbotModule,
+    EmailAutomatorModule,
   ],
   controllers: [AppController],
   providers: [

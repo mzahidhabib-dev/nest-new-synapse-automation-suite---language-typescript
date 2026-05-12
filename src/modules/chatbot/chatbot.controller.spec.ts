@@ -48,10 +48,7 @@ describe('ChatbotController', () => {
     const result = await controller.askBot(dto);
 
     // Verify controller delegates work to service correctly
-    expect(chatbotService.generateResponse).toHaveBeenCalledWith(
-      dto,
-      expect.any(String),
-    );
+    expect(chatbotService.generateResponse).toHaveBeenCalledWith(dto);
     expect(result).toEqual(mockResponse);
   });
 
@@ -87,7 +84,6 @@ describe('ChatbotController', () => {
     expect(chatbotService.generateStreamingResponse).toHaveBeenCalledWith(
       dto,
       expect.any(Function),
-      expect.any(String),
     );
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream');
     expect(res.end).toHaveBeenCalled();

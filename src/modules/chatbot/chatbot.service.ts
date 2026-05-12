@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ChatHistory } from './entities/chat-history.entity';
@@ -9,7 +9,6 @@ import { GoogleGenAI } from '@google/genai';
 
 @Injectable()
 export class ChatbotService {
-  private readonly logger = new Logger(ChatbotService.name);
   private openai: OpenAI;
   private groq: OpenAI;
   private gemini: GoogleGenAI;
@@ -51,34 +50,19 @@ export class ChatbotService {
     });
 
     this.gemini = new GoogleGenAI({ apiKey: geminiApiKey });
-
-    this.logger.log(
-      `AI clients configured openRouter=${Boolean(apiKey)} groq=${Boolean(
-        groqApiKey,
-      )} groqModel=${this.groqModel} gemini=${Boolean(
-        geminiApiKey,
-      )} geminiModel=${this.geminiModel}`,
-    );
   }
 
-  async generateResponse(dto: ChatRequestDto, requestId = this.createRequestId()) {
-    const startedAt = Date.now();
+  async generateResponse(dto: ChatRequestDto) {
     const { message, email } = dto;
 
     // 1. Save the new User Message to DB immediately
-    const saveUserStartedAt = Date.now();
     await this.chatRepo.save({ email, role: 'user', content: message });
-    this.logStep(requestId, '/ask user message saved', startedAt, saveUserStartedAt);
 
     // 2. Fetch last 6 messages (to include the one we just saved + previous context)
-    const historyStartedAt = Date.now();
     const history = await this.chatRepo.find({
       where: { email },
       order: { createdAt: 'DESC' },
       take: 6,
-    });
-    this.logStep(requestId, '/ask history fetched', startedAt, historyStartedAt, {
-      historyCount: history.length,
     });
 
     // 3. Format history for the AI (Chronological order)
@@ -170,10 +154,6 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
       null;
 
     for (const { provider, model } of providersToTry) {
-      const modelStartedAt = Date.now();
-      this.logger.log(
-        `[${requestId}] /ask model attempt started provider=${provider} model=${model}`,
-      );
       try {
         let modelReply = '';
 
@@ -219,32 +199,19 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
 
         reply = modelReply;
         usedModel = model;
-        this.logStep(requestId, '/ask model attempt succeeded', startedAt, modelStartedAt, {
-          provider,
-          model,
-          replyLength: reply.length,
-          totalTokens: usage?.totalTokens ?? 0,
-        });
         break;
-      } catch (error) {
-        this.logStep(requestId, '/ask model attempt failed', startedAt, modelStartedAt, {
-          provider,
-          model,
-          error: error instanceof Error ? error.message : 'unknown error',
-        });
+      } catch {
         modelErrors.push(`${provider}/${model}: request failed`);
       }
     }
 
     if (!reply || !usedModel) {
-      console.error('AI Error:', modelErrors.join(' | '));
       throw new InternalServerErrorException('AI failed to respond');
     }
 
     const estimatedCostUsd = this.calculateEstimatedCost(usage);
 
     // 6. Save AI Reply to DB
-    const saveAssistantStartedAt = Date.now();
     await this.chatRepo.save({
       email,
       role: 'assistant',
@@ -255,19 +222,6 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
       totalTokens: usage?.totalTokens ?? 0,
       estimatedCostUsd: estimatedCostUsd.toFixed(6),
     });
-    this.logStep(requestId, '/ask assistant message saved', startedAt, saveAssistantStartedAt);
-
-    console.log('AI Usage:', {
-      email,
-      model: usedModel,
-      promptTokens: usage?.promptTokens ?? 0,
-      completionTokens: usage?.completionTokens ?? 0,
-      totalTokens: usage?.totalTokens ?? 0,
-      estimatedCostUsd,
-    });
-    this.logger.log(
-      `[${requestId}] /ask service completed totalMs=${Date.now() - startedAt} model=${usedModel}`,
-    );
 
     return {
       success: true,
@@ -281,23 +235,15 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
   async generateStreamingResponse(
     dto: ChatRequestDto,
     onToken: (token: string) => void,
-    requestId = this.createRequestId(),
   ) {
-    const startedAt = Date.now();
     const { message, email } = dto;
 
-    const saveUserStartedAt = Date.now();
     await this.chatRepo.save({ email, role: 'user', content: message });
-    this.logStep(requestId, '/stream user message saved', startedAt, saveUserStartedAt);
 
-    const historyStartedAt = Date.now();
     const history = await this.chatRepo.find({
       where: { email },
       order: { createdAt: 'DESC' },
       take: 6,
-    });
-    this.logStep(requestId, '/stream history fetched', startedAt, historyStartedAt, {
-      historyCount: history.length,
     });
 
     const formattedHistory: ChatCompletionMessageParam[] = history.reverse().map((h) => ({
@@ -380,14 +326,8 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
 
     let fullReply = '';
     let usedModel: string | null = null;
-    let tokenCount = 0;
-    let firstTokenMs: number | null = null;
 
     for (const { provider, model } of providersToTry) {
-      const modelStartedAt = Date.now();
-      this.logger.log(
-        `[${requestId}] /stream model attempt started provider=${provider} model=${model}`,
-      );
       try {
         fullReply = '';
 
@@ -403,13 +343,6 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
           for await (const chunk of stream) {
             const token = chunk.choices[0]?.delta?.content || '';
             if (token) {
-              tokenCount += 1;
-              if (firstTokenMs === null) {
-                firstTokenMs = Date.now() - startedAt;
-                this.logger.log(
-                  `[${requestId}] /stream first token received totalMs=${firstTokenMs} provider=${provider} model=${model}`,
-                );
-              }
               fullReply += token;
               onToken(token);
             }
@@ -427,13 +360,6 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
           for await (const chunk of stream) {
             const token = chunk.text || '';
             if (token) {
-              tokenCount += 1;
-              if (firstTokenMs === null) {
-                firstTokenMs = Date.now() - startedAt;
-                this.logger.log(
-                  `[${requestId}] /stream first token received totalMs=${firstTokenMs} provider=${provider} model=${model}`,
-                );
-              }
               fullReply += token;
               onToken(token);
             }
@@ -447,34 +373,19 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
         }
 
         usedModel = model;
-        this.logStep(requestId, '/stream model attempt succeeded', startedAt, modelStartedAt, {
-          provider,
-          model,
-          tokenCount,
-          replyLength: fullReply.length,
-          firstTokenMs,
-        });
         break;
-      } catch (error) {
-        this.logStep(requestId, '/stream model attempt failed', startedAt, modelStartedAt, {
-          provider,
-          model,
-          tokenCount,
-          error: error instanceof Error ? error.message : 'unknown error',
-        });
+      } catch {
         modelErrors.push(`${provider}/${model}: request failed`);
       }
     }
 
     if (!usedModel || !fullReply) {
-      console.error('AI Stream Error:', modelErrors.join(' | '));
       throw new InternalServerErrorException('AI failed to stream response');
     }
 
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const estimatedCostUsd = this.calculateEstimatedCost(usage);
 
-    const saveAssistantStartedAt = Date.now();
     await this.chatRepo.save({
       email,
       role: 'assistant',
@@ -485,21 +396,6 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
       totalTokens: 0,
       estimatedCostUsd: estimatedCostUsd.toFixed(6),
     });
-    this.logStep(
-      requestId,
-      '/stream assistant message saved',
-      startedAt,
-      saveAssistantStartedAt,
-    );
-
-    console.log('AI Stream Usage:', {
-      email,
-      model: usedModel,
-      estimatedCostUsd,
-    });
-    this.logger.log(
-      `[${requestId}] /stream service completed totalMs=${Date.now() - startedAt} model=${usedModel} tokenCount=${tokenCount} firstTokenMs=${firstTokenMs}`,
-    );
 
     return {
       success: true,
@@ -550,26 +446,5 @@ A: "Python isn't in my core stack. My backend expertise is Node.js/NestJS and PH
       .join('\n');
 
     return `${systemPrompt.trim()}\n\nConversation so far:\n${conversation}`;
-  }
-
-  private logStep(
-    requestId: string,
-    step: string,
-    requestStartedAt: number,
-    stepStartedAt: number,
-    extra: Record<string, unknown> = {},
-  ): void {
-    const extraText = Object.entries(extra)
-      .map(([key, value]) => `${key}=${String(value)}`)
-      .join(' ');
-
-    this.logger.log(
-      `[${requestId}] ${step} stepMs=${Date.now() - stepStartedAt} totalMs=${Date.now() - requestStartedAt
-      }${extraText ? ` ${extraText}` : ''}`,
-    );
-  }
-
-  private createRequestId(): string {
-    return Math.random().toString(36).slice(2, 8);
   }
 }
