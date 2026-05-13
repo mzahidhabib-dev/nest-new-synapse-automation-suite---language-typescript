@@ -11,6 +11,7 @@ import { buildClassifierPrompt } from '../prompts/classifier.prompt';
 import { buildReplyPrompt } from '../prompts/reply-drafter.prompt';
 import { buildJudgePrompt } from '../prompts/judge.prompt';
 import { ABTestConfig } from '../config/ab-test.config';
+import { parseJsonObjectFromLlmText } from '../utils/parse-llm-json';
 
 @Injectable()
 export class EmailProcessorService {
@@ -32,7 +33,9 @@ export class EmailProcessorService {
     }
     const classificationPrompt = buildClassifierPrompt(emailText, testGroup);
     const classificationRaw = await this.llmService.callGemini(classificationPrompt);
-    const classification = ClassificationSchema.parse(JSON.parse(classificationRaw));
+    const classification = ClassificationSchema.parse(
+      parseJsonObjectFromLlmText(classificationRaw),
+    );
 
     const promptVersion =
       testGroup === 'A' ? classifierTest.versionA : classifierTest.versionB;
@@ -73,12 +76,12 @@ export class EmailProcessorService {
     // CHAIN 2: Draft reply
     const replyPrompt = buildReplyPrompt(emailText, classification);
     const replyRaw = await this.llmService.callGemini(replyPrompt);
-    const reply = ReplySchema.parse(JSON.parse(replyRaw));
+    const reply = ReplySchema.parse(parseJsonObjectFromLlmText(replyRaw));
 
     // CHAIN 3: Judge
     const judgePrompt = buildJudgePrompt(emailText, classification, reply.draft_reply);
     const judgeRaw = await this.llmService.callGroq(judgePrompt);
-    const judgeResult = JudgeSchema.parse(JSON.parse(judgeRaw));
+    const judgeResult = JudgeSchema.parse(parseJsonObjectFromLlmText(judgeRaw));
 
     const judgeLogParsed = ABTestLogSchema.safeParse({
       test_name: 'classifier_tone',

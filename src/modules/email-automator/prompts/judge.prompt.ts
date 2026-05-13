@@ -37,6 +37,9 @@ export function buildJudgePrompt(emailText: string, classification: any, draftRe
     "feedback": "brief explanation of the decision"
   }
   
-  Output JSON:
+  CRITICAL OUTPUT RULES:
+  - Your entire reply must be ONE valid JSON object only.
+  - Do not write any preamble, analysis, or markdown (no "To evaluate...", no \`\`\` fences).
+  - Start the response with { and end with }.
   `;
-  }
+}
