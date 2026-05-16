@@ -7,6 +7,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ChatbotModule } from './modules/chatbot/chatbot.module';
 import { EmailAutomatorModule } from './modules/email-automator/email-automator.module';
+import { LeadPipelineModule } from './modules/lead-pipeline/lead-pipeline.module';
 
 
 @Module({
@@ -40,6 +41,7 @@ import { EmailAutomatorModule } from './modules/email-automator/email-automator.
 
     ChatbotModule,
     EmailAutomatorModule,
+    LeadPipelineModule,
   ],
   controllers: [AppController],
   providers: [
