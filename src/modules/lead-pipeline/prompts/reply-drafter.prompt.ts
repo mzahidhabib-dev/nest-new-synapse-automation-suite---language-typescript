@@ -17,7 +17,7 @@ export function buildReplyPrompt(emailText: string, classification: any): string
   if (category === 'hot_lead') {
     categorySpecificInstructions = `
 - Express strong, energetic appreciation for reaching out from ${company}.
-- Explicitly acknowledge their mentioned timeline (${timeline}) and emphasize that our capacity matches perfectly.
+- Acknowledge their mentioned timeline (${timeline}) as a helpful target, but DO NOT guarantee our capacity or delivery until a scoping call is completed.
 - Keep the message warm, ultra-professional, and forward-looking.
 - Set the suggested_action to "book_call" to trigger calendar scheduling downstream in n8n.
 `;
@@ -57,6 +57,12 @@ PRIOR DISCOVERY METRICS:
 
 INSTRUCTIONS FOR THIS SPECIFIC LEAD CLASSIFICATION:
 ${categorySpecificInstructions}
+
+CRITICAL BUSINESS GUARDRAILS:
+1. NEVER guarantee a delivery timeline or a final project price in the initial email. 
+2. If the user mentions a budget, acknowledge it as a "helpful starting point for our scoping," but explicitly state that a technical discovery call is required before committing to final numbers.
+3. Your ONLY goal is to acknowledge their specific needs, prove competence, and push them toward booking a 15-minute discovery call.
+4. Keep the tone professional, slightly restrained, and highly consultative.
 
 STRICT WRITING RULES:
 1. Keep the drafted email strictly under 150 words. Long sales emails do not get read.
