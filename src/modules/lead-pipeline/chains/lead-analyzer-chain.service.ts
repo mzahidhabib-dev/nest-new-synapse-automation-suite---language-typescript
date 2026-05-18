@@ -29,7 +29,7 @@ export class LeadAnalyzerChainService {
     private readonly llmService: LlmService,
     @InjectRepository(LeadProcessingLog)
     private readonly logRepository: Repository<LeadProcessingLog>,
-  ) {}
+  ) { }
 
   /**
    * Main pipeline orchestrator. Executes Chain 1 (Gemini) -> Chain 2 (Gemini) -> Chain 3 (Groq).
@@ -38,10 +38,10 @@ export class LeadAnalyzerChainService {
    */
   async processLeadPipeline(emailText: string): Promise<any> {
     const startTime = Date.now();
-    
+
     // Create a unique deterministic signature based on a short base64 string sample of the text
     const leadSignature = Buffer.from(emailText.substring(0, 80)).toString('base64url');
-    
+
     let activeGroup: 'A' | 'B' = 'A';
     const experimentKey = 'lead_classifier_strategy';
     const testConfig = ABTestConfig.tests[experimentKey];
@@ -52,7 +52,7 @@ export class LeadAnalyzerChainService {
     }
 
     const promptVersion = activeGroup === 'A' ? testConfig.versionA : testConfig.versionB;
-    
+
     // Track execution states transparently across multi-layered try-catch loops
     let classificationResult: any = null;
     let replyDraftResult: any = null;
@@ -65,7 +65,7 @@ export class LeadAnalyzerChainService {
       // ----------------------------------------------------------------
       const classifierPrompt = buildClassifierPrompt(emailText, activeGroup);
       const rawClassifierOutput = await this.llmService.callGemini(classifierPrompt);
-      
+
       // Extract structural JSON and parse using Zod validation schema barriers
       classificationResult = LeadClassificationSchema.parse(
         parseJsonObjectFromLlmText(rawClassifierOutput),
@@ -94,7 +94,7 @@ export class LeadAnalyzerChainService {
       // ----------------------------------------------------------------
       const replyPrompt = buildReplyPrompt(emailText, classificationResult);
       const rawReplyOutput = await this.llmService.callGemini(replyPrompt);
-      
+
       replyDraftResult = LeadReplySchema.parse(
         parseJsonObjectFromLlmText(rawReplyOutput),
       );
@@ -104,7 +104,7 @@ export class LeadAnalyzerChainService {
       // ----------------------------------------------------------------
       const judgePrompt = buildJudgePrompt(emailText, classificationResult, replyDraftResult.draft_reply);
       const rawJudgeOutput = await this.llmService.callGroq(judgePrompt);
-      
+
       judgeResult = LeadJudgeSchema.parse(
         parseJsonObjectFromLlmText(rawJudgeOutput),
       );
@@ -120,10 +120,23 @@ export class LeadAnalyzerChainService {
         finalAction = 'rejected_by_judge';
       }
 
+      // return await this.saveAndReturnPayload({
+      //   emailText,
+      //   classification: classificationResult,
+      //   replyDraft: replyDraftResult.draft_reply,
+      //   judgeResult: judgeResult,
+      //   actionTaken: finalAction,
+      //   startTime,
+      //   activeGroup,
+      //   promptVersion
+      // });
+
+
       return await this.saveAndReturnPayload({
         emailText,
         classification: classificationResult,
         replyDraft: replyDraftResult.draft_reply,
+        suggestedAction: replyDraftResult.suggested_action, // <--- EXPOSE THE ACTION
         judgeResult: judgeResult,
         actionTaken: finalAction,
         startTime,
@@ -134,7 +147,7 @@ export class LeadAnalyzerChainService {
     } catch (error) {
       // Defensive Fallback Logging: Ensure processing history isn't lost if parsing or execution fails
       this.logger.error(`Pipeline runtime collapse: ${error.message}`, error.stack);
-      
+
       const executionTime = Date.now() - startTime;
       const errorLog = this.logRepository.create({
         emailText,
@@ -156,11 +169,12 @@ export class LeadAnalyzerChainService {
    */
   private async saveAndReturnPayload(params: {
     emailText: string; classification: any; replyDraft: string | null;
+    suggestedAction?: string | null; // <--- ADD THIS PARAMETER
     judgeResult: any; actionTaken: string; startTime: number;
     activeGroup: 'A' | 'B'; promptVersion: string;
   }): Promise<any> {
     const processingTimeMs = Date.now() - params.startTime;
-    
+
     const abTestMetadata = {
       test_name: 'lead_classifier_strategy',
       group: params.activeGroup,
@@ -188,7 +202,9 @@ export class LeadAnalyzerChainService {
     // Return an explicit, clean JSON contract designed for easy structural mapping inside n8n nodes
     return {
       logId: savedRecord.id,
-      action: savedRecord.actionTaken,
+      // action: savedRecord.actionTaken,
+      pipeline_status: savedRecord.actionTaken, // Renamed so it doesn't conflict with suggestedAction
+      n8n_route_action: params.suggestedAction || 'escalate_manually', // <--- n8n WILL READ THIS
       processingTimeMs,
       classification: {
         category: params.classification?.category,
