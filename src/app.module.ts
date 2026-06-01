@@ -8,6 +8,7 @@ import { AppService } from './app.service';
 import { ChatbotModule } from './modules/chatbot/chatbot.module';
 import { EmailAutomatorModule } from './modules/email-automator/email-automator.module';
 import { LeadPipelineModule } from './modules/lead-pipeline/lead-pipeline.module';
+import { RagModule } from './modules/rag/rag.module';
 
 
 @Module({
@@ -42,6 +43,7 @@ import { LeadPipelineModule } from './modules/lead-pipeline/lead-pipeline.module
     ChatbotModule,
     EmailAutomatorModule,
     LeadPipelineModule,
+    RagModule,
   ],
   controllers: [AppController],
   providers: [

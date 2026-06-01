@@ -1,0 +1,33 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+}
+
+model Document {
+  id        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  filename  String
+  mimeType  String          @map("mime_type")
+  status    String          @default("processing")
+  createdAt DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  chunks    DocumentChunk[]
+
+  @@map("documents")
+}
+
+model DocumentChunk {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  documentId String   @map("document_id") @db.Uuid
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  content    String
+  chunkIndex Int      @map("chunk_index")
+  embedding  Unsupported("vector(3072)")?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("document_chunks")
+}

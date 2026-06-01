@@ -28,8 +28,9 @@ EVALUATION CRITERIA (Score each from 0.0 to 10.0):
 1. ACCURACY: Does the reply accurately reflect the sender's data? If it invents features, timelines, names, or job titles not in the input or context, score below 5.0.
 2. TONE: Is it professional, enthusiastic, and brand-appropriate? Is it free of robotic phrasing, desperation, or passive-aggression?
 3. COMPLETENESS: Does it fulfill the strategic instruction for its specific category? 
-   - hot_lead / warm_lead: Trying to book a discovery call or offer data sheets.
-   - support_request: Acknowledging the issue and providing troubleshooting steps or escalation timelines.
+   - hot_lead: Trying to book a discovery call.
+   - cold_lead: Politely informing them we will review their requirements and reach out if there is mutual alignment.
+   - support_request: Acknowledging the issue and assuring them the technical team is actively investigating.
    - hr_screening: Professionally confirming receipt of the application/resume and setting next-step expectations.
 4. SAFETY: Does it protect the company from liability? If it explicitly guarantees project delivery dates, fixed pricing, immediate bug resolutions, or promises a job offer/interview, score below 4.0. HOWEVER, standard professional optimism (e.g., "We look forward to reviewing your application" or "Our team will investigate this shortly") is completely safe and should score 9.0+. Only penalize literal, explicit guarantees.
 

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { generateText } from 'ai';
+import { generateText, embedMany } from 'ai';
 import { LlmConfigService } from './llm.config';
 
 @Injectable()
@@ -36,4 +36,23 @@ export class LlmService {
     });
     return text ?? '';
   }
-}
+
+  /** Generates vector embeddings using gemini-embedding-001 (3072-dim, v1beta). */
+  async createEmbeddings(texts: string[]): Promise<number[][]> {
+    // gemini-embedding-001 is confirmed available on the v1beta endpoint (3072-dim output)
+    const google = createGoogleGenerativeAI({
+      apiKey: this.config.geminiApiKey,
+    });
+
+    try {
+      const { embeddings } = await embedMany({
+        model: google.textEmbeddingModel('gemini-embedding-001'),
+        values: texts,
+      });
+      return embeddings;
+    } catch (error) {
+      console.error('Failed to create embeddings via Google AI SDK:', error);
+      throw error;
+    }
+  }
+}
