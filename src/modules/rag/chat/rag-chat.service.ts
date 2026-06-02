@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { VectorSearchService } from '../search/vector-search.service';
 import { LlmService } from '../../llm/llm.service';
 import { ChatMessageDto } from '../dto/chat-message.dto';
+import { PrismaService } from '../prisma.service';
 
 export interface ChatResponse {
   answer: string;
@@ -12,49 +13,60 @@ export interface ChatResponse {
 @Injectable()
 export class RagChatService {
   private readonly logger = new Logger(RagChatService.name);
-  
-  // In-memory session storage (Map<sessionId, ChatMessageDto[]>)
-  // In V2, this should be moved to a PostgreSQL table
-  private readonly sessions = new Map<string, ChatMessageDto[]>();
 
   constructor(
     private readonly llmService: LlmService,
     private readonly vectorSearch: VectorSearchService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
-   * Retrieves or initializes the chat history for a session.
+   * Retrieves the chat history for a session from PostgreSQL.
    */
-  getChatHistory(sessionId: string): ChatMessageDto[] {
-    if (!this.sessions.has(sessionId)) {
-      this.sessions.set(sessionId, []);
+  async getChatHistory(sessionId: string, clientId: string): Promise<ChatMessageDto[]> {
+    const session = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
+    if (!session || session.clientId !== clientId) {
+      return [];
     }
-    return this.sessions.get(sessionId)!;
+
+    return session.messages.map(msg => ({
+      role: msg.role as 'user' | 'assistant',
+      content: msg.content,
+      sessionId: msg.sessionId,
+    }));
   }
 
   /**
-   * Full RAG flow: embed query → vector search → build prompt → LLM → return answer.
-   * Maintains session-based conversation memory in a Map.
+   * Full RAG flow with persistent PostgreSQL conversation memory.
    */
   async chat(
     query: string,
     sessionId: string,
+    clientId: string,
   ): Promise<ChatResponse> {
-    this.logger.log(`Received query for session ${sessionId}: "${query}"`);
+    this.logger.log(`Received query for session ${sessionId} (Client: ${clientId}): "${query}"`);
 
     try {
       // 1. Embed the user's query
       const [queryEmbedding] = await this.llmService.createEmbeddings([query]);
 
-      // 2. Search for top-5 most relevant chunks in the vector DB
-      const topChunks = await this.vectorSearch.search(queryEmbedding, 5);
+      // 2. Search for top-5 most relevant chunks in the vector DB scoped to clientId
+      const topChunks = await this.vectorSearch.search(queryEmbedding, clientId, 5);
 
       // 3. Extract the text and source chunk IDs
       const contextTexts = topChunks.map((c) => c.content);
       const sourceChunkIds = topChunks.map((c) => c.id);
 
-      // 4. Retrieve chat history (last 5 messages to avoid blowing up context window)
-      const history = this.getChatHistory(sessionId);
+      // 4. Retrieve chat history
+      const history = await this.getChatHistory(sessionId, clientId);
       const recentHistory = history.slice(-5);
       
       const historyPrompt = recentHistory
@@ -80,9 +92,19 @@ User Question: ${query}
       // 6. Call the LLM to generate the answer using Gemini
       const answer = await this.llmService.callGemini(prompt);
 
-      // 7. Update chat history with both the new query and the LLM's answer
-      history.push({ role: 'user', content: query, sessionId });
-      history.push({ role: 'assistant', content: answer, sessionId });
+      // 7. Upsert session and persist messages to DB
+      await this.prisma.chatSession.upsert({
+        where: { id: sessionId },
+        create: { id: sessionId, clientId },
+        update: {},
+      });
+
+      await this.prisma.chatMessage.createMany({
+        data: [
+          { sessionId, role: 'user', content: query },
+          { sessionId, role: 'assistant', content: answer },
+        ],
+      });
 
       return {
         answer,

@@ -10,6 +10,7 @@ datasource db {
 
 model Document {
   id        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId  String          @default("default-client") @map("client_id")
   filename  String
   mimeType  String          @map("mime_type")
   status    String          @default("processing")
@@ -30,4 +31,24 @@ model DocumentChunk {
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@map("document_chunks")
+}
+
+model ChatSession {
+  id        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId  String        @map("client_id")
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  messages  ChatMessage[]
+
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId String      @map("session_id") @db.Uuid
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String      // 'user' or 'assistant'
+  content   String
+  createdAt DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("chat_messages")
 }

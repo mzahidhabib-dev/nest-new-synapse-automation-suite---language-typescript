@@ -1,43 +1,22 @@
-import { Injectable, Logger, InternalServerErrorException, OnModuleInit } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
+import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import { PrismaService } from './prisma.service';
 import { ExtractorService } from './pipeline/extractor.service';
 import { ChunkerService } from './pipeline/chunker.service';
 import { EmbedderService } from './pipeline/embedder.service';
 
 @Injectable()
-export class RagService implements OnModuleInit {
+export class RagService {
   private readonly logger = new Logger(RagService.name);
-  private prisma: PrismaClient;
 
   constructor(
     private extractor: ExtractorService,
     private chunker: ChunkerService,
     private embedder: EmbedderService,
+    private prisma: PrismaService,
   ) {}
 
-  // This runs exactly when NestJS is fully loaded and ready
-  async onModuleInit() {
-    if (!process.env.DATABASE_URL) {
-      this.logger.error('CRITICAL: DATABASE_URL is missing from your environment variables!');
-      return;
-    }
-
-    const pool = new Pool({ 
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false } 
-    });
-    
-    const adapter = new PrismaPg(pool);
-    this.prisma = new PrismaClient({ adapter });
-    
-    // Optional: Connect immediately to verify it works
-    await this.prisma.$connect();
-  }
-
   // ... Keep your existing processDocument method exactly as it is below this!
-  async processDocument(file: Express.Multer.File) {
+  async processDocument(file: Express.Multer.File, clientId: string) {
 
     // 1. Create a tracking record in the DB
     const doc = await this.prisma.document.create({
@@ -45,11 +24,12 @@ export class RagService implements OnModuleInit {
         filename: file.originalname,
         mimeType: file.mimetype,
         status: 'processing',
+        clientId,
       },
     });
 
     try {
-      this.logger.log(`Processing document: ${doc.id}`);
+      this.logger.log(`Processing document: ${doc.id} for client: ${clientId}`);
 
       // 2. Extract text from PDF/DOCX
       const text = await this.extractor.extract(file);
@@ -100,20 +80,26 @@ export class RagService implements OnModuleInit {
   }
 
   /**
-   * Retrieves all uploaded documents.
+   * Retrieves all uploaded documents for a specific client.
    */
-  async getAllDocuments() {
+  async getAllDocuments(clientId: string) {
     return this.prisma.document.findMany({
+      where: { clientId },
       orderBy: { createdAt: 'desc' },
     });
   }
 
   /**
-   * Deletes a document by ID. Due to Cascade delete in Prisma,
-   * this will also automatically delete all associated chunks.
+   * Deletes a document by ID. Validates clientId to prevent cross-tenant deletion.
    */
-  async deleteDocument(id: string) {
+  async deleteDocument(id: string, clientId: string) {
     try {
+      // First check if it belongs to the client
+      const doc = await this.prisma.document.findUnique({ where: { id } });
+      if (!doc || doc.clientId !== clientId) {
+        throw new InternalServerErrorException('Document not found or unauthorized');
+      }
+
       await this.prisma.document.delete({
         where: { id },
       });

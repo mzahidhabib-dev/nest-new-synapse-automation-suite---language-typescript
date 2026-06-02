@@ -1,24 +1,12 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
+import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../prisma.service';
 import { DocumentChunkEntity } from '../entity/document-chunk.entity';
 
 @Injectable()
-export class VectorSearchService implements OnModuleInit {
+export class VectorSearchService {
   private readonly logger = new Logger(VectorSearchService.name);
-  private prisma: PrismaClient;
 
-  async onModuleInit() {
-    if (!process.env.DATABASE_URL) return;
-    const pool = new Pool({ 
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false } 
-    });
-    const adapter = new PrismaPg(pool);
-    this.prisma = new PrismaClient({ adapter });
-    await this.prisma.$connect();
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Finds the top-K most similar chunks to the given query vector
@@ -26,34 +14,39 @@ export class VectorSearchService implements OnModuleInit {
    */
   async search(
     queryVector: number[],
+    clientId: string,
     topK: number = 5,
     documentId?: string,
   ): Promise<DocumentChunkEntity[]> {
     const vectorString = `[${queryVector.join(',')}]`;
 
     try {
-      // We use raw SQL because Prisma doesn't natively support pgvector's <=> operator yet
       let results: any[];
       
       if (documentId) {
         results = await this.prisma.$queryRaw`
-          SELECT id, document_id as "documentId", content, chunk_index as "chunkIndex", metadata, created_at as "createdAt",
-                 1 - (embedding <=> ${vectorString}::vector) as similarity
-          FROM document_chunks
-          WHERE document_id = ${documentId}::uuid
-          ORDER BY embedding <=> ${vectorString}::vector
+          SELECT dc.id, dc.document_id as "documentId", dc.content, dc.chunk_index as "chunkIndex", dc.metadata, dc.created_at as "createdAt",
+                 1 - (dc.embedding <=> ${vectorString}::vector) as similarity
+          FROM document_chunks dc
+          JOIN documents d ON d.id = dc.document_id
+          WHERE dc.document_id = ${documentId}::uuid AND d.client_id = ${clientId}
+          ORDER BY dc.embedding <=> ${vectorString}::vector
           LIMIT ${topK};
         `;
       } else {
         results = await this.prisma.$queryRaw`
-          SELECT id, document_id as "documentId", content, chunk_index as "chunkIndex", metadata, created_at as "createdAt",
-                 1 - (embedding <=> ${vectorString}::vector) as similarity
-          FROM document_chunks
-          ORDER BY embedding <=> ${vectorString}::vector
+          SELECT dc.id, dc.document_id as "documentId", dc.content, dc.chunk_index as "chunkIndex", dc.metadata, dc.created_at as "createdAt",
+                 1 - (dc.embedding <=> ${vectorString}::vector) as similarity
+          FROM document_chunks dc
+          JOIN documents d ON d.id = dc.document_id
+          WHERE d.client_id = ${clientId}
+          ORDER BY dc.embedding <=> ${vectorString}::vector
           LIMIT ${topK};
         `;
       }
 
+      // FUTURE ENHANCEMENT: Integrate Cohere/Jina Re-ranking API here.
+      // For now, we return the raw cosine similarity ranking.
       return results as DocumentChunkEntity[];
     } catch (error) {
       this.logger.error('Failed to execute vector search', error);

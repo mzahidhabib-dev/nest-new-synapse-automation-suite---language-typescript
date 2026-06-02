@@ -13,4 +13,8 @@ export class QueryRagDto {
   @IsString()
   @IsOptional()
   documentId?: string; // Optional: restrict search to a specific document
+
+  @IsString()
+  @IsOptional()
+  sessionId?: string; // Optional: Session ID for conversation history
 }

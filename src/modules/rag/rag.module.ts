@@ -6,12 +6,14 @@ import { ChunkerService } from './pipeline/chunker.service';
 import { EmbedderService } from './pipeline/embedder.service';
 import { VectorSearchService } from './search/vector-search.service';
 import { RagChatService } from './chat/rag-chat.service';
+import { PrismaService } from './prisma.service';
 import { LlmModule } from '../llm/llm.module'; 
 
 @Module({
   imports: [LlmModule],
   controllers: [RagController],
   providers: [
+    PrismaService,
     RagService, 
     ExtractorService, 
     ChunkerService, 

@@ -8,6 +8,7 @@ import {
   Delete,
   Param,
   Body,
+  Headers,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -29,13 +30,15 @@ export class RagController {
   ) {}
 
   @Get('documents')
-  async getAllDocuments() {
-    return this.ragService.getAllDocuments();
+  async getAllDocuments(@Headers('x-client-id') clientId: string) {
+    if (!clientId) throw new BadRequestException('x-client-id header is required');
+    return this.ragService.getAllDocuments(clientId);
   }
 
   @Delete('documents/:id')
-  async deleteDocument(@Param('id') id: string) {
-    return this.ragService.deleteDocument(id);
+  async deleteDocument(@Headers('x-client-id') clientId: string, @Param('id') id: string) {
+    if (!clientId) throw new BadRequestException('x-client-id header is required');
+    return this.ragService.deleteDocument(id, clientId);
   }
 
   @Post('upload')
@@ -52,23 +55,25 @@ export class RagController {
       },
     }),
   )
-  async uploadDocument(@UploadedFile() file: Express.Multer.File) {
+  async uploadDocument(@Headers('x-client-id') clientId: string, @UploadedFile() file: Express.Multer.File) {
+    if (!clientId) throw new BadRequestException('x-client-id header is required');
     if (!file) {
       throw new BadRequestException('No file provided in the request.');
     }
-    return this.ragService.processDocument(file);
+    return this.ragService.processDocument(file, clientId);
   }
 
   @Post('chat')
-  async chat(@Body() queryDto: QueryRagDto) {
-    // Generate a simple session ID if one isn't provided or implemented fully in frontend yet
-    const sessionId = 'default-session'; 
-    return this.chatService.chat(queryDto.query, sessionId);
+  async chat(@Headers('x-client-id') clientId: string, @Body() queryDto: QueryRagDto) {
+    if (!clientId) throw new BadRequestException('x-client-id header is required');
+    const sessionId = queryDto.sessionId || '00000000-0000-0000-0000-000000000000'; 
+    return this.chatService.chat(queryDto.query, sessionId, clientId);
   }
 
   @Get('chat/:sessionId')
-  getChatHistory(@Param('sessionId') sessionId: string) {
-    return this.chatService.getChatHistory(sessionId);
+  getChatHistory(@Headers('x-client-id') clientId: string, @Param('sessionId') sessionId: string) {
+    if (!clientId) throw new BadRequestException('x-client-id header is required');
+    return this.chatService.getChatHistory(sessionId, clientId);
   }
 }
 
