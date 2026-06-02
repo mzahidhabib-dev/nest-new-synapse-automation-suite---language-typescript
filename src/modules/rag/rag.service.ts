@@ -57,17 +57,23 @@ export class RagService implements OnModuleInit {
       // 3. Chunk the text
       const chunks = this.chunker.chunk(text);
 
-      // 4. Generate vectors via OpenAI (Using your Vercel AI SDK setup)
+      // 4. Generate vector embeddings via LlmService (gemini-embedding-001, 1536-dim)
       const embeddings = await this.embedder.embedMany(chunks);
 
       // 5. Save chunks + embeddings to DB via raw SQL for pgvector
       for (let i = 0; i < chunks.length; i++) {
         const chunkText = chunks[i];
         const embeddingString = `[${embeddings[i].join(',')}]`;
+        const metadata = JSON.stringify({
+          chunkIndex: i,
+          totalChunks: chunks.length,
+          source: file.originalname,
+          mimeType: file.mimetype,
+        });
 
         await this.prisma.$executeRaw`
-          INSERT INTO document_chunks (document_id, content, chunk_index, embedding)
-          VALUES (${doc.id}::uuid, ${chunkText}, ${i}, ${embeddingString}::vector)
+          INSERT INTO document_chunks (document_id, content, chunk_index, embedding, metadata)
+          VALUES (${doc.id}::uuid, ${chunkText}, ${i}, ${embeddingString}::vector, ${metadata}::jsonb)
         `;
       }
 

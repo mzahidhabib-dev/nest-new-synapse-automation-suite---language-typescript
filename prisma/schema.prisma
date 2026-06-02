@@ -25,7 +25,7 @@ model DocumentChunk {
   document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
   content    String
   chunkIndex Int      @map("chunk_index")
-  embedding  Unsupported("vector(3072)")?
+  embedding  Unsupported("vector(1536)")?
   metadata   Json?
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
 

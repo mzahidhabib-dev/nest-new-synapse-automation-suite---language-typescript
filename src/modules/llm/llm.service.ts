@@ -37,9 +37,8 @@ export class LlmService {
     return text ?? '';
   }
 
-  /** Generates vector embeddings using gemini-embedding-001 (3072-dim, v1beta). */
+  /** Generates vector embeddings using gemini-embedding-001 truncated to 1536-dim. */
   async createEmbeddings(texts: string[]): Promise<number[][]> {
-    // gemini-embedding-001 is confirmed available on the v1beta endpoint (3072-dim output)
     const google = createGoogleGenerativeAI({
       apiKey: this.config.geminiApiKey,
     });
@@ -49,7 +48,11 @@ export class LlmService {
         model: google.textEmbeddingModel('gemini-embedding-001'),
         values: texts,
       });
-      return embeddings;
+      
+      // gemini-embedding-001 natively outputs 3072 dims.
+      // We manually truncate to 1536 to stay within pgvector's ivfflat 2000-dim index limit.
+      // (Gemini uses Matryoshka representation learning, so slicing the array works perfectly).
+      return embeddings.map((emb) => emb.slice(0, 1536));
     } catch (error) {
       console.error('Failed to create embeddings via Google AI SDK:', error);
       throw error;
