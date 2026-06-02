@@ -98,4 +98,29 @@ export class RagService implements OnModuleInit {
       throw new InternalServerErrorException('Document processing failed');
     }
   }
-}
+
+  /**
+   * Retrieves all uploaded documents.
+   */
+  async getAllDocuments() {
+    return this.prisma.document.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * Deletes a document by ID. Due to Cascade delete in Prisma,
+   * this will also automatically delete all associated chunks.
+   */
+  async deleteDocument(id: string) {
+    try {
+      await this.prisma.document.delete({
+        where: { id },
+      });
+      return { success: true, message: `Document ${id} deleted successfully.` };
+    } catch (error) {
+      this.logger.error(`Failed to delete document ${id}`, error);
+      throw new InternalServerErrorException('Failed to delete document');
+    }
+  }
+}
