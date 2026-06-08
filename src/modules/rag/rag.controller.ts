@@ -15,7 +15,7 @@ import { memoryStorage } from 'multer';
 import { RagService } from './rag.service';
 import { RagChatService } from './chat/rag-chat.service';
 import { QueryRagDto } from './dto/query-rag.dto';
-
+ 
 const ALLOWED_MIME_TYPES = [
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -28,6 +28,13 @@ export class RagController {
     private readonly ragService: RagService,
     private readonly chatService: RagChatService,
   ) {}
+
+  @Get('admin/stats')
+  async getAdminStats() {
+    // Note: In a production app, we would add an @AdminGuard here
+    // to ensure only platform admins can view these stats.
+    return this.ragService.getAdminStats();
+  }
 
   @Get('documents')
   async getAllDocuments(@Headers('x-client-id') clientId: string) {
@@ -45,7 +52,7 @@ export class RagController {
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
-      limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+      limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB
       fileFilter: (_req, file, cb) => {
         if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
           cb(null, true);
@@ -76,4 +83,4 @@ export class RagController {
     return this.chatService.getChatHistory(sessionId, clientId);
   }
 }
-
+

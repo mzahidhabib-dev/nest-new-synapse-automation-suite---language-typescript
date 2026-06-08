@@ -1,8 +1,9 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Logger, InternalServerErrorException, ConflictException } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { ExtractorService } from './pipeline/extractor.service';
 import { ChunkerService } from './pipeline/chunker.service';
 import { EmbedderService } from './pipeline/embedder.service';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class RagService {
@@ -13,23 +14,34 @@ export class RagService {
     private chunker: ChunkerService,
     private embedder: EmbedderService,
     private prisma: PrismaService,
-  ) {}
+  ) { }
 
-  // ... Keep your existing processDocument method exactly as it is below this!
   async processDocument(file: Express.Multer.File, clientId: string) {
+    // 0. Calculate MD5 hash for Incremental Updates / Deduplication
+    const fileHash = crypto.createHash('md5').update(file.buffer).digest('hex');
 
-    // 1. Create a tracking record in the DB
-    const doc = await this.prisma.document.create({
-      data: {
-        filename: file.originalname,
-        mimeType: file.mimetype,
-        status: 'processing',
-        clientId,
-      },
-    });
+    // Check if this exact file was already processed by this tenant
+    const existingDoc = await this.prisma.$queryRaw<any[]>`
+      SELECT id, status FROM documents 
+      WHERE client_id = ${clientId} AND file_hash = ${fileHash} 
+      LIMIT 1;
+    `;
+
+    if (existingDoc && existingDoc.length > 0) {
+      this.logger.warn(`File already exists for client ${clientId} with hash ${fileHash}. Skipping.`);
+      throw new ConflictException('This exact file has already been uploaded.');
+    }
+
+    // 1. Create a tracking record in the DB using raw query to insert file_hash
+    const result = await this.prisma.$queryRaw<any[]>`
+      INSERT INTO documents (client_id, filename, mime_type, status, file_hash)
+      VALUES (${clientId}, ${file.originalname}, ${file.mimetype}, 'processing', ${fileHash})
+      RETURNING id;
+    `;
+    const docId = result[0].id;
 
     try {
-      this.logger.log(`Processing document: ${doc.id} for client: ${clientId}`);
+      this.logger.log(`Processing document: ${docId} for client: ${clientId}`);
 
       // 2. Extract text from PDF/DOCX
       const text = await this.extractor.extract(file);
@@ -53,28 +65,28 @@ export class RagService {
 
         await this.prisma.$executeRaw`
           INSERT INTO document_chunks (document_id, content, chunk_index, embedding, metadata)
-          VALUES (${doc.id}::uuid, ${chunkText}, ${i}, ${embeddingString}::vector, ${metadata}::jsonb)
+          VALUES (${docId}::uuid, ${chunkText}, ${i}, ${embeddingString}::vector, ${metadata}::jsonb)
         `;
       }
 
       // 6. Mark as finished!
       await this.prisma.document.update({
-        where: { id: doc.id },
+        where: { id: docId },
         data: { status: 'ready' },
       });
 
-      this.logger.log(`Successfully processed document: ${doc.id}`);
-      return { documentId: doc.id, chunksProcessed: chunks.length };
+      this.logger.log(`Successfully processed document: ${docId}`);
+      return { documentId: docId, chunksProcessed: chunks.length };
 
     } catch (error) {
-      this.logger.error(`Failed to process document ${doc.id}`, error);
-      
+      this.logger.error(`Failed to process document ${docId}`, error);
+
       // Mark as failed if anything crashes
       await this.prisma.document.update({
-        where: { id: doc.id },
+        where: { id: docId },
         data: { status: 'failed' },
       });
-      
+
       throw new InternalServerErrorException('Document processing failed');
     }
   }
@@ -109,4 +121,39 @@ export class RagService {
       throw new InternalServerErrorException('Failed to delete document');
     }
   }
-}
+
+  /**
+   * Retrieves global statistics for the Admin Dashboard.
+   * This spans across all tenants.
+   */
+  async getAdminStats() {
+    try {
+      const [totalDocuments, totalSessions, totalChunks] = await Promise.all([
+        this.prisma.document.count(),
+        this.prisma.chatSession.count(),
+        this.prisma.documentChunk.count(),
+      ]);
+
+      // Count documents per tenant
+      const documentsByTenant = await this.prisma.document.groupBy({
+        by: ['clientId'],
+        _count: {
+          id: true,
+        },
+      });
+
+      return {
+        totalDocuments,
+        totalSessions,
+        totalChunks,
+        documentsByTenant: documentsByTenant.map(d => ({
+          clientId: d.clientId,
+          count: d._count.id,
+        })),
+      };
+    } catch (error) {
+      this.logger.error('Failed to get admin stats', error);
+      throw new InternalServerErrorException('Failed to retrieve admin stats');
+    }
+  }
+}

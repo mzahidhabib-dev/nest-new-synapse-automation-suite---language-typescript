@@ -58,8 +58,8 @@ export class RagChatService {
       // 1. Embed the user's query
       const [queryEmbedding] = await this.llmService.createEmbeddings([query]);
 
-      // 2. Search for top-5 most relevant chunks in the vector DB scoped to clientId
-      const topChunks = await this.vectorSearch.search(queryEmbedding, clientId, 5);
+      // 2. Search for top-5 most relevant chunks using Hybrid Search (Vector + Keyword)
+      const topChunks = await this.vectorSearch.search(query, queryEmbedding, clientId, 5);
 
       // 3. Extract the text and source chunk IDs
       const contextTexts = topChunks.map((c) => c.content);

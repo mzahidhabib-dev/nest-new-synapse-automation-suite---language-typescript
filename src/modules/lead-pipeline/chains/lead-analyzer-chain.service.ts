@@ -120,17 +120,6 @@ export class LeadAnalyzerChainService {
         finalAction = 'rejected_by_judge';
       }
 
-      // return await this.saveAndReturnPayload({
-      //   emailText,
-      //   classification: classificationResult,
-      //   replyDraft: replyDraftResult.draft_reply,
-      //   judgeResult: judgeResult,
-      //   actionTaken: finalAction,
-      //   startTime,
-      //   activeGroup,
-      //   promptVersion
-      // });
-
 
       return await this.saveAndReturnPayload({
         emailText,
