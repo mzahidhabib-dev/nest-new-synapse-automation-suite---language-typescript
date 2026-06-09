@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma.service';
 export interface ChatResponse {
   answer: string;
   sourceChunkIds: string[];
+  contextTexts?: string[];
   sessionId: string;
 }
 
@@ -109,6 +110,7 @@ User Question: ${query}
       return {
         answer,
         sourceChunkIds,
+        contextTexts,
         sessionId,
       };
     } catch (error) {
