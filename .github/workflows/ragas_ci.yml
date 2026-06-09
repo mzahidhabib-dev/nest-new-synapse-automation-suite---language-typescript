@@ -29,7 +29,7 @@ jobs:
           cache: 'npm'
 
       - name: Install Backend Dependencies
-        run: npm ci
+        run: npm ci --legacy-peer-deps
 
       - name: Install Python Eval Dependencies
         working-directory: ./eval
