@@ -1,0 +1,62 @@
+name: RAG Evaluation CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  ragas_eval:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Use 3.11 in CI to avoid Windows 3.14 issues in the future if needed
+          cache: 'pip'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Backend Dependencies
+        run: npm ci
+
+      - name: Install Python Eval Dependencies
+        working-directory: ./eval
+        run: pip install -r requirements.txt
+
+      - name: Start NestJS Backend
+        run: npm run start:dev &
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Wait for Server
+        run: sleep 10 # Wait for NestJS to boot up
+
+      - name: Run RAGAS Evaluation
+        working-directory: ./eval
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python custom_ragas_eval.py
+
+      - name: Upload Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-evaluation-report
+          path: ./eval/ragas_report.csv
+          
+      # In a real environment, you would parse the CSV here and 
+      # fail the build (exit 1) if average faithfulness < 0.80

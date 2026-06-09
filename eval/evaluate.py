@@ -3,7 +3,8 @@ import json
 import os
 import uuid
 import time
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 # Load environment variables from the root directory
@@ -14,27 +15,20 @@ if not GEMINI_API_KEY:
     print("❌ ERROR: GEMINI_API_KEY is not set in the root .env file.")
     exit(1)
 
-# Configure the Judge LLM
-genai.configure(api_key=GEMINI_API_KEY)
-# Using flash for faster evaluations, or pro for more accurate ones
-model = genai.GenerativeModel('gemini-2.5-flash') 
+# Configure the Judge LLM using the new SDK
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 API_URL = "http://localhost:3000/rag/chat"
 CLIENT_ID = "tenant-a"
 
-# --- 1. Define Test Dataset ---
-# In a real environment, you might load this from a CSV or JSON file.
-TEST_CASES = [
-    {
-        "question": "What is the capital of France?",
-        "expected_answer": "Paris"
-    },
-    {
-        "question": "How do you calculate the area of a circle?",
-        "expected_answer": "Pi multiplied by the radius squared."
-    }
-    # Add more domain-specific questions based on the PDFs you uploaded
-]
+# Load the Golden Dataset
+dataset_path = os.path.join(os.path.dirname(__file__), 'golden_dataset.json')
+if os.path.exists(dataset_path):
+    with open(dataset_path, 'r', encoding='utf-8') as f:
+        TEST_CASES = json.load(f)
+else:
+    print("❌ ERROR: golden_dataset.json not found. Run generate_dataset.py first.")
+    exit(1)
 
 def query_backend(question: str) -> dict:
     """Sends the question to the NestJS RAG backend and retrieves the response."""
@@ -87,9 +81,12 @@ def grade_response(question: str, generated_answer: str, expected_answer: str, c
     
     try:
         # Ask Gemini to return JSON
-        result = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(response_mime_type="application/json")
+        result = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            )
         )
         return json.loads(result.text)
     except Exception as e:
@@ -128,7 +125,7 @@ def run_evaluation():
         grades = grade_response(
             question=test['question'],
             generated_answer=generated_answer,
-            expected_answer=test['expected_answer'],
+            expected_answer=test['answer'],
             context=full_context
         )
         

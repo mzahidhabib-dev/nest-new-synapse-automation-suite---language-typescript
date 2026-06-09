@@ -2,3 +2,7 @@ requests
 google-genai
 python-dotenv
 psycopg2-binary
+ragas
+datasets
+langchain-google-genai
+pandas
