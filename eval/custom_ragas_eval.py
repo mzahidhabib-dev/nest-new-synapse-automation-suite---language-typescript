@@ -127,10 +127,71 @@ def run():
         print("\n" + "="*50)
         print("🏆 CUSTOM RAGAS REPORT CARD 🏆")
         print("="*50)
-        print(f"Average Faithfulness:      {avg['faithfulness']/n:.4f}")
-        print(f"Average Answer Relevancy:  {avg['answer_relevancy']/n:.4f}")
-        print(f"Average Contextual Recall: {avg['contextual_recall']/n:.4f}")
+        
+        avg_faithfulness = avg['faithfulness'] / n
+        avg_relevancy = avg['answer_relevancy'] / n
+        avg_recall = avg['contextual_recall'] / n
+        
+        print(f"Average Faithfulness:      {avg_faithfulness:.4f}")
+        print(f"Average Answer Relevancy:  {avg_relevancy:.4f}")
+        print(f"Average Contextual Recall: {avg_recall:.4f}")
         print(f"\n✅ Detailed CSV report saved to {csv_path}")
+
+        # --- Generate Enterprise HTML Report ---
+        # We define accuracy as the average of Faithfulness and Answer Relevancy
+        accuracy = ((avg_faithfulness + avg_relevancy) / 2) * 100
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Weekly AI Performance Report</title>
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8f9fa; color: #343a40; text-align: center; padding: 50px; }}
+                .container {{ background: white; padding: 50px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); max-width: 600px; margin: auto; }}
+                h1 {{ color: #212529; font-size: 28px; margin-bottom: 10px; }}
+                .subtitle {{ color: #6c757d; font-size: 16px; margin-bottom: 30px; }}
+                .accuracy {{ font-size: 54px; font-weight: 800; color: {'#198754' if accuracy >= 90 else '#dc3545'}; margin: 20px 0; }}
+                .metrics {{ display: flex; justify-content: space-around; margin-top: 40px; text-align: left; background: #f8f9fa; padding: 20px; border-radius: 8px; }}
+                .metric {{ text-align: center; }}
+                .metric-title {{ font-size: 12px; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; }}
+                .metric-value {{ font-size: 20px; font-weight: bold; color: #495057; margin-top: 5px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Weekly AI Performance Report</h1>
+                <div class="subtitle">Enterprise Client Retainer Justification</div>
+                
+                <div class="accuracy">Your system is {accuracy:.1f}% accurate this week.</div>
+                
+                <div class="metrics">
+                    <div class="metric">
+                        <div class="metric-title">Faithfulness</div>
+                        <div class="metric-value">{avg_faithfulness*100:.1f}%</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-title">Answer Relevancy</div>
+                        <div class="metric-value">{avg_relevancy*100:.1f}%</div>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        html_path = os.path.join(os.path.dirname(__file__), 'ragas_report.html')
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+            
+        print(f"✅ Enterprise HTML report saved to {html_path}")
+        
+        # --- Fail CI/CD if Accuracy < 90% ---
+        if accuracy < 90.0:
+            print("\n❌ CI/CD ALERT: System accuracy dropped below 90%. Failing build.")
+            exit(1)
+        else:
+            print("\n✅ System accuracy is above 90%. Build passed.")
 
 if __name__ == "__main__":
     run()

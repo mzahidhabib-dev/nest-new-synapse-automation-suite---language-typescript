@@ -51,12 +51,11 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python custom_ragas_eval.py
 
-      - name: Upload Report Artifact
+      - name: Upload Report Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ragas-evaluation-report
-          path: ./eval/ragas_report.csv
-          
-      # In a real environment, you would parse the CSV here and 
-      # fail the build (exit 1) if average faithfulness < 0.80
+          name: ragas-evaluation-reports
+          path: |
+            ./eval/ragas_report.csv
+            ./eval/ragas_report.html
