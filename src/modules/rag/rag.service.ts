@@ -16,105 +16,127 @@ export class RagService {
     private prisma: PrismaService,
   ) { }
 
-  async processDocument(file: Express.Multer.File, clientId: string) {
-    // 0. Calculate MD5 hash for Incremental Updates / Deduplication
+  /**
+   * Creates a document record in the DB immediately, then kicks off ingestion
+   * in the background WITHOUT blocking the HTTP response.
+   *
+   * Before this fix, the server would freeze for 10–30 seconds on large PDFs
+   * because the entire pipeline (extract → chunk → embed → store) was awaited
+   * synchronously inside the HTTP request handler.
+   */
+  async processDocument(file: Express.Multer.File, tenantId: string) {
+    // 0. Calculate MD5 hash for deduplication
     const fileHash = crypto.createHash('md5').update(file.buffer).digest('hex');
 
-    // Check if this exact file was already processed by this tenant
+    // 1. Check if this exact file was already processed by this tenant
     const existingDoc = await this.prisma.$queryRaw<any[]>`
       SELECT id, status FROM documents 
-      WHERE client_id = ${clientId} AND file_hash = ${fileHash} 
+      WHERE tenant_id = ${tenantId}::uuid AND file_hash = ${fileHash} 
       LIMIT 1;
     `;
 
     if (existingDoc && existingDoc.length > 0) {
-      this.logger.warn(`File already exists for client ${clientId} with hash ${fileHash}. Skipping.`);
+      this.logger.warn(`File already exists for tenant ${tenantId} with hash ${fileHash}. Skipping.`);
       throw new ConflictException('This exact file has already been uploaded.');
     }
 
-    // 1. Create a tracking record in the DB using raw query to insert file_hash
+    const fileSizeKb = Math.round(file.size / 1024) || 1;
+
+    // 2. Create a tracking record in the DB with status = 'processing'
     const result = await this.prisma.$queryRaw<any[]>`
-      INSERT INTO documents (client_id, filename, mime_type, status, file_hash)
-      VALUES (${clientId}, ${file.originalname}, ${file.mimetype}, 'processing', ${fileHash})
+      INSERT INTO documents (tenant_id, filename, mime_type, file_size_kb, status, file_hash)
+      VALUES (${tenantId}::uuid, ${file.originalname}, ${file.mimetype}, ${fileSizeKb}, 'processing', ${fileHash})
       RETURNING id;
     `;
     const docId = result[0].id;
 
+    // 3. ✅ FIX: Fire background ingestion — do NOT await.
+    //    The HTTP response returns immediately with { documentId, status: 'processing' }.
+    //    The frontend polls GET /documents to check when status becomes 'ready'.
+    this.ingestInBackground(docId, file, tenantId);
+
+    this.logger.log(`Document ${docId} created. Background ingestion started.`);
+    return { documentId: docId, status: 'processing' };
+  }
+
+  /**
+   * Full ingestion pipeline running in the background (not awaited by HTTP handler).
+   * If anything fails, the document is marked 'failed' so the UI can show an error.
+   */
+  private async ingestInBackground(
+    docId: string,
+    file: Express.Multer.File,
+    tenantId: string,
+  ): Promise<void> {
     try {
-      this.logger.log(`Processing document: ${docId} for client: ${clientId}`);
+      this.logger.log(`[BG] Starting ingestion for document: ${docId}`);
 
-      // 2. Extract text from PDF/DOCX
-      const text = await this.extractor.extract(file);
-
-      // 3. Chunk the text
-      const chunks = this.chunker.chunk(text);
-
-      // 4. Generate vector embeddings via LlmService (gemini-embedding-001, 1536-dim)
-      const embeddings = await this.embedder.embedMany(chunks);
-
-      // 5. Save chunks + embeddings to DB via raw SQL for pgvector
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkText = chunks[i];
-        const embeddingString = `[${embeddings[i].join(',')}]`;
-        const metadata = JSON.stringify({
-          chunkIndex: i,
-          totalChunks: chunks.length,
-          source: file.originalname,
-          mimeType: file.mimetype,
-        });
-
-        await this.prisma.$executeRaw`
-          INSERT INTO document_chunks (document_id, content, chunk_index, embedding, metadata)
-          VALUES (${docId}::uuid, ${chunkText}, ${i}, ${embeddingString}::vector, ${metadata}::jsonb)
-        `;
+      // 1. Extract text as structured pages (with real page numbers)
+      const pages = await this.extractor.extract(file);
+      if (pages.length === 0 || pages.every(p => !p.text.trim())) {
+        throw new Error('No text could be extracted from this document');
       }
 
-      // 6. Mark as finished!
-      await this.prisma.document.update({
-        where: { id: docId },
-        data: { status: 'ready' },
+      // 2. Chunk pages into Chunk[] objects — each chunk carries its page number
+      const chunks = this.chunker.chunk(pages, file.originalname);
+
+      // 3. Generate vector embeddings in batches
+      const chunkTexts = chunks.map(c => c.content);
+      const embeddings = await this.embedder.embedMany(chunkTexts);
+
+      // 4. Save chunks + embeddings to DB with full metadata (including page number)
+      const insertPromises = chunks.map((chunk, i) => {
+        const embeddingString = `[${embeddings[i].join(',')}]`;
+        // metadata now includes: page, chunkIndex, source
+        const metadata = JSON.stringify(chunk.metadata);
+
+        return this.prisma.$executeRaw`
+          INSERT INTO document_chunks (document_id, tenant_id, content, chunk_index, embedding, metadata)
+          VALUES (${docId}::uuid, ${tenantId}::uuid, ${chunk.content}, ${chunk.metadata.chunkIndex}, ${embeddingString}::vector, ${metadata}::jsonb)
+        `;
       });
 
-      this.logger.log(`Successfully processed document: ${docId}`);
-      return { documentId: docId, chunksProcessed: chunks.length };
+      await this.prisma.$transaction(insertPromises);
 
+      // 5. Mark document as ready
+      await this.prisma.document.update({
+        where: { id: docId },
+        data: { status: 'ready', totalChunks: chunks.length },
+      });
+
+      this.logger.log(`[BG] Successfully processed document: ${docId} (${chunks.length} chunks from ${pages.length} pages)`);
     } catch (error) {
-      this.logger.error(`Failed to process document ${docId}`, error);
+      this.logger.error(`[BG] Failed to process document ${docId}`, error);
 
-      // Mark as failed if anything crashes
+      // Mark as failed so the UI can show an error state
       await this.prisma.document.update({
         where: { id: docId },
         data: { status: 'failed' },
-      });
-
-      throw new InternalServerErrorException('Document processing failed');
+      }).catch(e => this.logger.error('Could not mark document as failed', e));
     }
   }
 
   /**
-   * Retrieves all uploaded documents for a specific client.
+   * Retrieves all uploaded documents for a specific tenant.
    */
-  async getAllDocuments(clientId: string) {
+  async getAllDocuments(tenantId: string) {
     return this.prisma.document.findMany({
-      where: { clientId },
+      where: { tenantId },
       orderBy: { createdAt: 'desc' },
     });
   }
 
   /**
-   * Deletes a document by ID. Validates clientId to prevent cross-tenant deletion.
+   * Deletes a document by ID. Validates tenantId to prevent cross-tenant deletion.
    */
-  async deleteDocument(id: string, clientId: string) {
+  async deleteDocument(id: string, tenantId: string) {
     try {
-      // First check if it belongs to the client
       const doc = await this.prisma.document.findUnique({ where: { id } });
-      if (!doc || doc.clientId !== clientId) {
+      if (!doc || doc.tenantId !== tenantId) {
         throw new InternalServerErrorException('Document not found or unauthorized');
       }
 
-      await this.prisma.document.delete({
-        where: { id },
-      });
+      await this.prisma.document.delete({ where: { id } });
       return { success: true, message: `Document ${id} deleted successfully.` };
     } catch (error) {
       this.logger.error(`Failed to delete document ${id}`, error);
@@ -128,32 +150,56 @@ export class RagService {
    */
   async getAdminStats() {
     try {
-      const [totalDocuments, totalSessions, totalChunks] = await Promise.all([
+      const [totalDocuments, totalSessions, totalChunks, blockedRequests, recentAudits] = await Promise.all([
         this.prisma.document.count(),
         this.prisma.chatSession.count(),
         this.prisma.documentChunk.count(),
+        this.prisma.rateLimit.count({ where: { hits: { gte: 20 } } }),
+        this.prisma.auditLog.findMany({ take: 5, orderBy: { createdAt: 'desc' } })
       ]);
 
-      // Count documents per tenant
       const documentsByTenant = await this.prisma.document.groupBy({
-        by: ['clientId'],
-        _count: {
-          id: true,
-        },
+        by: ['tenantId'],
+        _count: { id: true },
       });
 
       return {
         totalDocuments,
         totalSessions,
         totalChunks,
+        blockedRequests,
+        recentAudits,
         documentsByTenant: documentsByTenant.map(d => ({
-          clientId: d.clientId,
+          tenantId: d.tenantId,
           count: d._count.id,
         })),
       };
     } catch (error) {
       this.logger.error('Failed to get admin stats', error);
       throw new InternalServerErrorException('Failed to retrieve admin stats');
+    }
+  }
+
+  /**
+   * Retrieves specific statistics for a single tenant (Client Dashboard).
+   */
+  async getClientStats(tenantId: string) {
+    try {
+      const [totalDocuments, totalSessions, recentDocs] = await Promise.all([
+        this.prisma.document.count({ where: { tenantId } }),
+        this.prisma.chatSession.count({ where: { tenantId } }),
+        this.prisma.document.findMany({
+          where: { tenantId },
+          take: 5,
+          orderBy: { createdAt: 'desc' },
+          select: { id: true, filename: true, status: true, createdAt: true }
+        })
+      ]);
+
+      return { totalDocuments, totalSessions, recentDocs };
+    } catch (error) {
+      this.logger.error(`Failed to get client stats for ${tenantId}`, error);
+      throw new InternalServerErrorException('Failed to retrieve client stats');
     }
   }
 }

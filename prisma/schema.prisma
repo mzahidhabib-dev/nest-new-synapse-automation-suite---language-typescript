@@ -8,15 +8,66 @@ datasource db {
   provider  = "postgresql"
 }
 
-model Document {
-  id        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  clientId  String          @default("default-client") @map("client_id")
-  filename  String
-  mimeType  String          @map("mime_type")
-  status    String          @default("processing")
-  createdAt DateTime        @default(now()) @map("created_at") @db.Timestamptz
-  chunks    DocumentChunk[]
+model Tenant {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  slug      String   @unique
+  plan      String   @default("free")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  
+  users     User[]
+  documents Document[]
+  sessions  ChatSession[]
+  
+  @@map("tenants")
+}
 
+model User {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email         String
+  passwordHash  String   @map("password_hash")
+  role          String   @default("user") // 'admin' | 'user'
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  
+  sessions      ChatSession[]
+
+  @@unique([tenantId, email])
+  @@map("users")
+}
+
+model ChatSession {
+  id        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String        @map("tenant_id") @db.Uuid
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String        @map("user_id") @db.Uuid
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String        @default("New Chat")
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime      @default(now()) @map("updated_at") @db.Timestamptz
+  
+  messages  ChatMessage[]
+
+  @@map("chat_sessions")
+}
+
+model Document {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  filename    String
+  fileHash    String   @map("file_hash")
+  mimeType    String   @map("mime_type")
+  fileSizeKb  Int      @map("file_size_kb")
+  status      String   @default("processing")
+  errorMsg    String?  @map("error_msg")
+  totalChunks Int      @default(0) @map("total_chunks")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  
+  chunks      DocumentChunk[]
+
+  @@unique([tenantId, fileHash])
   @@map("documents")
 }
 
@@ -24,31 +75,50 @@ model DocumentChunk {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   documentId String   @map("document_id") @db.Uuid
   document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  content    String
+  tenantId   String   @map("tenant_id") @db.Uuid
   chunkIndex Int      @map("chunk_index")
+  content    String
   embedding  Unsupported("vector(1536)")?
-  metadata   Json?
+  metadata   Json?    @default("{}")
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@map("document_chunks")
 }
 
-model ChatSession {
-  id        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  clientId  String        @map("client_id")
-  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
-  messages  ChatMessage[]
-
-  @@map("chat_sessions")
-}
-
 model ChatMessage {
-  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  sessionId String      @map("session_id") @db.Uuid
-  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  role      String      // 'user' or 'assistant'
-  content   String
-  createdAt DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  id         String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId  String      @map("session_id") @db.Uuid
+  session    ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  tenantId   String      @map("tenant_id") @db.Uuid
+  role       String      // 'user' | 'assistant' | 'tool'
+  content    String
+  toolCalls  Json?       @map("tool_calls")
+  sources    Json?
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz
 
   @@map("chat_messages")
+}
+
+model AuditLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String?  @map("tenant_id") @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  action     String
+  metadata   Json?    @default("{}")
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("audit_logs")
+}
+
+model RateLimit {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  endpoint   String
+  hits       Int      @default(0)
+  resetTime  DateTime @map("reset_time") @db.Timestamptz
+
+  @@unique([tenantId, endpoint])
+  @@map("rate_limits")
 }

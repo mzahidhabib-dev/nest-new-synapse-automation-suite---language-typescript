@@ -13,7 +13,6 @@ import { LlmModule } from '../llm/llm.module';
   imports: [LlmModule],
   controllers: [RagController],
   providers: [
-    PrismaService,
     RagService, 
     ExtractorService, 
     ChunkerService, 

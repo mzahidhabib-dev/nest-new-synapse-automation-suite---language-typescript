@@ -9,7 +9,10 @@ import { ChatbotModule } from './modules/chatbot/chatbot.module';
 import { EmailAutomatorModule } from './modules/email-automator/email-automator.module';
 import { LeadPipelineModule } from './modules/lead-pipeline/lead-pipeline.module';
 import { RagModule } from './modules/rag/rag.module';
-
+import { LlmModule } from './modules/llm/llm.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 
 @Module({
   imports: [
@@ -28,29 +31,37 @@ import { RagModule } from './modules/rag/rag.module';
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: process.env.DB_HOST,
-      // Add '|| "5432"' to ensure there is always a string to parse
       port: parseInt(process.env.DB_PORT || '5432'),
       username: process.env.DB_USERNAME,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_DATABASE,
-      autoLoadEntities: true, // Automatically finds your "History" table
+      autoLoadEntities: true,
       synchronize: true,
       // ssl: {
-      //   rejectUnauthorized: false, // This allows RDS's self-signed cert
-      // }, // SYNC: Creates tables automatically (Development only)
+      //   rejectUnauthorized: false,
+      // },
     }),
 
     ChatbotModule,
     EmailAutomatorModule,
     LeadPipelineModule,
     RagModule,
+    LlmModule,
+    PrismaModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
+    // Global rate limiter — applies to every route
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
+    },
+    // Global JWT auth — every route requires a valid token unless decorated with @Public()
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,
     },
   ],
 })

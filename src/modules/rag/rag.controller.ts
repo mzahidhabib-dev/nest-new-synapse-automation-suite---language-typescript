@@ -9,7 +9,14 @@ import {
   Param,
   Body,
   Headers,
+  UseGuards,
+  Sse,
+  Request,
+  NotFoundException,
 } from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PrismaService } from '../../prisma/prisma.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { RagService } from './rag.service';
@@ -23,29 +30,32 @@ const ALLOWED_MIME_TYPES = [
 ];
 
 @Controller('rag')
+@UseGuards(JwtAuthGuard)
 export class RagController {
   constructor(
     private readonly ragService: RagService,
     private readonly chatService: RagChatService,
+    private readonly prisma: PrismaService,
   ) {}
 
   @Get('admin/stats')
   async getAdminStats() {
-    // Note: In a production app, we would add an @AdminGuard here
-    // to ensure only platform admins can view these stats.
     return this.ragService.getAdminStats();
   }
 
+  @Get('client/stats')
+  async getClientStats(@Request() req) {
+    return this.ragService.getClientStats(req.user.tenantId);
+  }
+
   @Get('documents')
-  async getAllDocuments(@Headers('x-client-id') clientId: string) {
-    if (!clientId) throw new BadRequestException('x-client-id header is required');
-    return this.ragService.getAllDocuments(clientId);
+  async getAllDocuments(@Request() req) {
+    return this.ragService.getAllDocuments(req.user.tenantId);
   }
 
   @Delete('documents/:id')
-  async deleteDocument(@Headers('x-client-id') clientId: string, @Param('id') id: string) {
-    if (!clientId) throw new BadRequestException('x-client-id header is required');
-    return this.ragService.deleteDocument(id, clientId);
+  async deleteDocument(@Request() req, @Param('id') id: string) {
+    return this.ragService.deleteDocument(id, req.user.tenantId);
   }
 
   @Post('upload')
@@ -62,25 +72,54 @@ export class RagController {
       },
     }),
   )
-  async uploadDocument(@Headers('x-client-id') clientId: string, @UploadedFile() file: Express.Multer.File) {
-    if (!clientId) throw new BadRequestException('x-client-id header is required');
+  async uploadDocument(@Request() req, @UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('No file provided in the request.');
     }
-    return this.ragService.processDocument(file, clientId);
+    return this.ragService.processDocument(file, req.user.tenantId);
   }
 
   @Post('chat')
-  async chat(@Headers('x-client-id') clientId: string, @Body() queryDto: QueryRagDto) {
-    if (!clientId) throw new BadRequestException('x-client-id header is required');
+  @Sse()
+  chat(@Request() req, @Body() queryDto: QueryRagDto): Observable<any> {
     const sessionId = queryDto.sessionId || '00000000-0000-0000-0000-000000000000'; 
-    return this.chatService.chat(queryDto.query, sessionId, clientId);
+    return this.chatService.chatStream(queryDto.query, sessionId, req.user.tenantId, req.user.userId);
   }
 
   @Get('chat/:sessionId')
-  getChatHistory(@Headers('x-client-id') clientId: string, @Param('sessionId') sessionId: string) {
-    if (!clientId) throw new BadRequestException('x-client-id header is required');
-    return this.chatService.getChatHistory(sessionId, clientId);
+  getChatHistory(@Request() req, @Param('sessionId') sessionId: string) {
+    return this.chatService.getChatHistory(sessionId, req.user.tenantId);
+  }
+
+  // ─── Session Management ───────────────────────────────────────────────────
+
+  @Post('sessions')
+  async createSession(@Request() req) {
+    const { userId, tenantId } = req.user;
+    const session = await this.prisma.chatSession.create({
+      data: { tenantId, userId, title: 'New Chat' },
+    });
+    return { sessionId: session.id, title: session.title };
+  }
+
+  @Get('sessions')
+  async listSessions(@Request() req) {
+    const { userId, tenantId } = req.user;
+    return this.prisma.chatSession.findMany({
+      where: { tenantId, userId },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+      select: { id: true, title: true, createdAt: true, updatedAt: true },
+    });
+  }
+
+  @Delete('sessions/:id')
+  async deleteSession(@Request() req, @Param('id') id: string) {
+    const session = await this.prisma.chatSession.findUnique({ where: { id } });
+    if (!session || session.userId !== req.user.userId) {
+      throw new NotFoundException('Session not found');
+    }
+    await this.prisma.chatSession.delete({ where: { id } });
+    return { deleted: true };
   }
 }
-

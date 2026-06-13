@@ -27,7 +27,7 @@ describe('AppController (e2e)', () => {
   });
 
   it('/ (GET)', () => {
-    return request(app.getHttpServer())
+    return request(app!.getHttpServer())
       .get('/')
       .expect(200)
       // Root endpoint now returns an HTML welcome page
