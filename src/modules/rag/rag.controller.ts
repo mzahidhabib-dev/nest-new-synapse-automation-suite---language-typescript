@@ -22,6 +22,8 @@ import { memoryStorage } from 'multer';
 import { RagService } from './rag.service';
 import { RagChatService } from './chat/rag-chat.service';
 import { QueryRagDto } from './dto/query-rag.dto';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
  
 const ALLOWED_MIME_TYPES = [
   'application/pdf',
@@ -30,7 +32,7 @@ const ALLOWED_MIME_TYPES = [
 ];
 
 @Controller('rag')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class RagController {
   constructor(
     private readonly ragService: RagService,
@@ -39,6 +41,7 @@ export class RagController {
   ) {}
 
   @Get('admin/stats')
+  @Roles('admin')
   async getAdminStats() {
     return this.ragService.getAdminStats();
   }
@@ -99,7 +102,7 @@ export class RagController {
     const session = await this.prisma.chatSession.create({
       data: { tenantId, userId, title: 'New Chat' },
     });
-    return { sessionId: session.id, title: session.title };
+    return { id: session.id, title: session.title };
   }
 
   @Get('sessions')

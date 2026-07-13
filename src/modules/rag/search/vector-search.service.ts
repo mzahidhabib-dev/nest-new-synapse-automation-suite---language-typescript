@@ -113,10 +113,12 @@ export class VectorSearchService {
 
       // 4. LLM Re-ranking
       const scores = await this.llmService.rerankChunks(queryText, rrfCandidates);
+      console.log('[DIAG] rerankChunks scores array:', scores);
+      this.logger.log(`[DIAG] rerank raw scores length: ${scores.length}`);
       
       // Filter and sort based on the LLM's strict score (keep chunks with score >= 5)
       const rerankedResults = scores
-        .filter(s => s.score >= 5)
+        .filter(s => s.score >= 2)
         .sort((a, b) => b.score - a.score)
         .map(s => rrfCandidates[s.index])
         .filter(chunk => chunk !== undefined)

@@ -6,6 +6,7 @@ import { VectorSearchService } from '../search/vector-search.service';
 import { LlmService } from '../../llm/llm.service';
 import { ChatMessageDto } from '../dto/chat-message.dto';
 import { PrismaService } from '../prisma.service';
+import { AiGatewayService } from '../../security/ai-gateway.service';
 
 export interface ChatResponse {
   answer: string;
@@ -22,7 +23,8 @@ export class RagChatService {
     private readonly llmService: LlmService,
     private readonly vectorSearch: VectorSearchService,
     private readonly prisma: PrismaService,
-  ) {}
+    private readonly aiGateway: AiGatewayService,
+  ) { }
 
   /**
    * Retrieves the chat history for a session from PostgreSQL.
@@ -73,7 +75,7 @@ export class RagChatService {
       // 4. Retrieve chat history
       const history = await this.getChatHistory(sessionId, tenantId);
       const recentHistory = history.slice(-5);
-      
+
       const historyPrompt = recentHistory
         .map(msg => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
         .join('\n');
@@ -137,15 +139,24 @@ User Question: ${query}
     return new Observable((subscriber) => {
       (async () => {
         try {
+          // --- SECURITY LAYER ---
+          const securityCheck = await this.aiGateway.processInput(query, tenantId, userId);
+          if (securityCheck.blocked) {
+            subscriber.next({ data: { type: 'chunk', text: `[System]: Message blocked. ${securityCheck.reason}` } });
+            subscriber.next({ data: { type: 'done' } });
+            subscriber.complete();
+            return;
+          }
+          const safeQuery = securityCheck.safeMessage;
+
           // 1. History
           const history = await this.getChatHistory(sessionId, tenantId);
-          const messages: any[] = history.map(msg => ({
-            role: msg.role,
-            content: msg.content
-          }));
-          messages.push({ role: 'user', content: query });
+          const messages = [
+            ...history.map(m => ({ role: m.role, content: m.content })),
+            { role: 'user' as const, content: safeQuery },
+          ];
 
-      const systemMessage = `You are an advanced, helpful AI assistant.
+          const systemMessage = `You are an advanced, helpful AI assistant.
 You have access to internal tools.
 ALWAYS use the 'searchDatabase' tool to look up facts, documents, or company information before answering data-specific questions.
 When using the 'searchDatabase' tool, you MUST provide a valid 'searchQuery' string parameter.
@@ -156,121 +167,134 @@ When you use information from the database, you MUST cite the exact source docum
 [Source: filename.pdf, Page X]
 You will find the filename in the tool results as [Document: filename.pdf]. You will find the page number inside the chunk text as [PAGE X].`;
 
-      // 2. Start Agent Loop with Tools
-      const agentOptions = {
-        model: this.llmService.getGeminiModel(),
-        system: systemMessage,
-        messages,
-        maxSteps: 5,
-        tools: {
-          searchDatabase: tool({
-            description: 'Search the private knowledge base for context and documents.',
-            parameters: z.object({
-              searchQuery: z.string().describe('The core topic or question to search for.'),
-            }),
-            execute: async (args: any) => {
-              const searchQuery = args.searchQuery;
-              this.logger.log(`[Tool] searchDatabase called with args: ${JSON.stringify(args)}`);
-              
-              if (!searchQuery) {
-                return 'Error: You must provide a "searchQuery" parameter.';
-              }
-
-              const [queryEmbedding] = await this.llmService.createEmbeddings([searchQuery]);
-              const topChunks = await this.vectorSearch.search(searchQuery, queryEmbedding, tenantId, 5);
-              if (topChunks.length === 0) return 'No relevant documents found.';
-              return topChunks.map((c: any) => `[Document: ${c.metadata?.source || 'Unknown Document'}]\n${c.content}`).join('\n\n');
-            },
-          } as any),
-          sendEmail: tool({
-            description: 'Send an email to a user or client.',
-            parameters: z.object({
-              to: z.string().describe('Email address'),
-              subject: z.string(),
-              body: z.string()
-            }),
-            execute: async (args: any) => {
-              this.logger.log(`[Tool] sendEmail: ${JSON.stringify(args)}`);
-              return 'Email sent successfully.';
-            }
-          } as any),
-          qualifyLead: tool({
-            description: 'Determine if a company name is a qualified sales lead.',
-            parameters: z.object({ companyName: z.string() }),
-            execute: async ({ companyName }: { companyName: string }) => {
-              this.logger.log(`[Tool] qualifyLead for ${companyName}`);
-              return `${companyName} has an estimated ARR of $5M. Highly qualified.`;
-            }
-          } as any)
-        }
-      };
-
-      // 3. ✅ FIX: Save the session to DB BEFORE streaming starts.
-      //    Title is set from the first user query so the sidebar shows something meaningful.
-      const titleUpdate = query.slice(0, 60).trim() || 'New Chat';
-      const existingSession = await this.prisma.chatSession.findUnique({
-        where: { id: sessionId },
-        select: { title: true }
-      });
-
-      const dataToUpdate: any = { updatedAt: new Date() };
-      if (history.length === 0) {
-        dataToUpdate.title = titleUpdate;
-      }
-
-      await this.prisma.chatSession.upsert({
-        where: { id: sessionId },
-        create: {
-          id: sessionId,
-          tenantId,
-          userId,
-          title: titleUpdate,
-        },
-        update: dataToUpdate,
-      });
-
-            let fullAnswer = '';
-            // Execute the Agent with Tools (maxSteps: 5 handles the ReAct loop automatically!)
-            const result1 = await streamText(agentOptions as any);
-
-            // Read the full stream which includes both text and tool-call events
-            for await (const chunk of result1.fullStream) {
-              const anyChunk = chunk as any;
-              if (anyChunk.type === 'text-delta') {
-                const chunkText = anyChunk.text || anyChunk.textDelta || anyChunk.delta || '';
-                if (chunkText) {
-                  fullAnswer += chunkText;
+          // 2. Start Agent Loop with Tools
+          const agentOptions = {
+            model: this.llmService.getGeminiModel(),
+            system: systemMessage,
+            messages,
+            maxSteps: 50,
+            onStepFinish: (event) => {
+              if (event.toolCalls && event.toolCalls.length > 0) {
+                for (const tc of event.toolCalls) {
                   subscriber.next({
-                    data: { type: 'chunk', text: chunkText }
+                    data: {
+                      type: 'tool',
+                      toolName: tc.toolName,
+                      args: tc.args || {}
+                    }
                   });
                 }
-              } else if (anyChunk.type === 'tool-call') {
-                subscriber.next({
-                  data: { 
-                    type: 'tool', 
-                    toolName: anyChunk.toolName,
-                    args: anyChunk.args || anyChunk.input || {}
-                  }
-                });
               }
+            },
+            tools: {
+              searchDatabase: tool({
+                description: 'Search the private knowledge base for context and documents.',
+                parameters: z.object({
+                  searchQuery: z.string().describe('The core topic or question to search for.'),
+                }),
+                execute: async (args: any) => {
+                  const searchQuery = args.searchQuery;
+                  this.logger.log(`[Tool] searchDatabase called with args: ${JSON.stringify(args)}`);
+
+                  if (!searchQuery) {
+                    return 'Error: You must provide a "searchQuery" parameter.';
+                  }
+
+                  const [queryEmbedding] = await this.llmService.createEmbeddings([searchQuery]);
+                  const topChunks = await this.vectorSearch.search(searchQuery, queryEmbedding, tenantId, 2);
+                  // Build result and ensure it stays well within LLM token budget
+                  const rawResult = topChunks.map((c: any) => `[Document: ${c.metadata?.source || 'Unknown Document'}]\n${c.content}`).join('\n\n');
+                  const truncatedResult = rawResult.length > 1000 ? rawResult.slice(0, 1000) + '... (truncated)' : rawResult;
+                  console.log('[DIAG] searchDatabase → result length:', truncatedResult.length);
+                  console.log('[DIAG] searchDatabase → raw output:\n', truncatedResult);
+                  return truncatedResult;
+                },
+              } as any),
+              sendEmail: tool({
+                description: 'Send an email to a user or client.',
+                parameters: z.object({
+                  to: z.string().describe('Email address'),
+                  subject: z.string(),
+                  body: z.string()
+                }),
+                execute: async (args: any) => {
+                  this.logger.log(`[Tool] sendEmail: ${JSON.stringify(args)}`);
+                  return 'Email sent successfully.';
+                }
+              } as any),
+              qualifyLead: tool({
+                description: 'Determine if a company name is a qualified sales lead.',
+                parameters: z.object({ companyName: z.string() }),
+                execute: async ({ companyName }: { companyName: string }) => {
+                  this.logger.log(`[Tool] qualifyLead for ${companyName}`);
+                  return `${companyName} has an estimated ARR of $5M. Highly qualified.`;
+                }
+              } as any)
             }
+          };
 
-            // After stream is complete, persist the messages to DB
-            await this.prisma.chatMessage.createMany({
-              data: [
-                { sessionId, tenantId, role: 'user', content: query },
-                { sessionId, tenantId, role: 'assistant', content: fullAnswer },
-              ],
-            });
+          // 3. ✅ FIX: Save the session to DB BEFORE streaming starts.
+          //    Title is set from the first user query so the sidebar shows something meaningful.
+          const titleUpdate = safeQuery.slice(0, 60).trim() || 'New Chat';
+          const existingSession = await this.prisma.chatSession.findUnique({
+            where: { id: sessionId },
+            select: { title: true }
+          });
 
-            subscriber.next({ data: { type: 'done' } });
-            subscriber.complete();
-          } catch (error) {
-            this.logger.error(`Error streaming chunks: ${error.message}`);
-            require('fs').writeFileSync('debug-error.log', error.stack || error.message);
-            subscriber.error(error);
+          const dataToUpdate: any = { updatedAt: new Date() };
+          if (history.length === 0) {
+            dataToUpdate.title = titleUpdate;
           }
-        })();
-      });
+
+          await this.prisma.chatSession.upsert({
+            where: { id: sessionId },
+            create: {
+              id: sessionId,
+              tenantId,
+              userId,
+              title: titleUpdate,
+            },
+            update: dataToUpdate,
+          });
+
+          let fullAnswer = '';
+          // Execute the Agent with Tools
+          const result1 = await streamText(agentOptions as any);
+
+          // Read the text stream
+          for await (const chunkText of result1.textStream) {
+            if (chunkText) {
+              fullAnswer += chunkText;
+              subscriber.next({
+                data: { type: 'chunk', text: chunkText }
+              });
+            }
+          }
+
+          if (!fullAnswer.trim()) {
+            console.log('[DIAG] LLM stream completed – fullAnswer length:', fullAnswer.length);
+            fullAnswer = "I've searched the available information, but I couldn't generate a clear response.";
+            subscriber.next({
+              data: { type: 'chunk', text: fullAnswer }
+            });
+          }
+
+          // After stream, 4. Save assistant's answer to DB
+          await this.prisma.chatMessage.createMany({
+            data: [
+              { sessionId, tenantId, role: 'user', content: safeQuery },
+              { sessionId, tenantId, role: 'assistant', content: fullAnswer },
+            ],
+          });
+
+          subscriber.next({ data: { type: 'done' } });
+          subscriber.complete();
+        } catch (error) {
+          this.logger.error(`Error streaming chunks: ${error.message}`);
+          require('fs').writeFileSync('debug-error.log', error.stack || error.message);
+          subscriber.error(error);
+        }
+      })();
+    });
   }
 }

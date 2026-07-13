@@ -6,7 +6,7 @@ import { LlmConfigService } from './llm.config';
 
 @Injectable()
 export class LlmService {
-  constructor(private readonly config: LlmConfigService) {}
+  constructor(private readonly config: LlmConfigService) { }
 
   /** Groq via OpenAI-compatible API (Vercel AI SDK + @ai-sdk/openai). */
   async callGroq(prompt: string, jsonMode = false): Promise<string> {
@@ -68,7 +68,7 @@ export class LlmService {
         model: google.textEmbeddingModel('gemini-embedding-001'),
         values: texts,
       });
-      
+
       // gemini-embedding-001 natively outputs 3072 dims.
       // We manually truncate to 1536 to stay within pgvector's ivfflat 2000-dim index limit.
       // (Gemini uses Matryoshka representation learning, so slicing the array works perfectly).
@@ -106,12 +106,12 @@ Return ONLY a valid JSON array of objects in this exact format:
 `;
 
     const responseText = await this.callGemini(prompt);
-    
+
     try {
       // Find JSON array in the response (handles markdown formatting if present)
       const match = responseText.match(/\[[\s\S]*\]/);
       if (!match) throw new Error('No JSON array found in response');
-      
+
       const scores = JSON.parse(match[0]);
       return scores;
     } catch (error) {
@@ -120,4 +120,4 @@ Return ONLY a valid JSON array of objects in this exact format:
       return chunks.map((_, index) => ({ index, score: 5 }));
     }
   }
-}
+}

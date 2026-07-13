@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class LlmConfigService {
-  constructor(private configService: ConfigService) {}
+  constructor(private configService: ConfigService) { }
 
   // get groqApiKey(): string {
   //   return this.configService.get<string>('GROQ_API_KEY');

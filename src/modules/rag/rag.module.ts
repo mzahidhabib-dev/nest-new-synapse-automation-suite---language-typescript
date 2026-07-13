@@ -8,9 +8,10 @@ import { VectorSearchService } from './search/vector-search.service';
 import { RagChatService } from './chat/rag-chat.service';
 import { PrismaService } from './prisma.service';
 import { LlmModule } from '../llm/llm.module'; 
+import { SecurityModule } from '../security/security.module';
 
 @Module({
-  imports: [LlmModule],
+  imports: [LlmModule, SecurityModule],
   controllers: [RagController],
   providers: [
     RagService, 
